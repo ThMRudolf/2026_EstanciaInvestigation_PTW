@@ -1,11 +1,3 @@
-echo "# 2026_EstanciaInvestigation_PTW" >> README.md
-git init
-git add README.md
-git commit -m "first commit"
-git branch -M main
-git remote add origin https://github.com/ThMRudolf/2026_EstanciaInvestigation_PTW.git
-git push -u origin main
-
 # Kienzle Milling Model — Python Library Documentation
 
 **Author:** Thomas M. Rudolf  
