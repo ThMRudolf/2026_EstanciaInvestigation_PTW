@@ -1,0 +1,498 @@
+---
+title: "mc_kienzle"
+author: "Thomas M. Rudolf"
+date: "2024-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gt)
+library(ggplot2)
+library(MASS)
+library(patchwork)
+library(tidyverse)
+library(DiagrammeR)
+```
+
+Kienzle Model for cutting torque:
+
+$F_{ci} = k_c b h^{1-m_c} = a_p f_z^{1-m_c} sin(\kappa)^{m_c} k_{c1.1} sin(\phi + (k-1) \frac{360}{z})^{1-m_c}$
+
+$M_c = \sum_1^z{F_{ci} r_{tool}}$
+
+$a_p$ cutting depth
+
+$f_z$ feed per cutting edge
+
+$\kappa$ main tool angle
+
+$z$ number of cutting edges
+
+$k$ cutting edgre id : 1..z
+
+The value of $m_c$ and $k_{c1.1}$ are material specific values and have to be identified. A mean value 0.25. One will take a #beta distribution# to simulate the resulting torque for different machining situations. The machining are varied in cutting depth $a_p$, feed per tooth $f_z$ and different entrance angles $\phi$.
+
+```{r}
+#| out-width: 100%
+#| code-fold: true
+grViz("
+digraph {
+  graph [ranksep = 0.3, rankdir = LR]
+  # Unbekannte Variablen – mit Kreis (ellipse) und roter Umrandung
+  kc11 [shape=circle]
+  mc   [shape=circle]
+  dphi  [shape=circle]
+  Fci  [shape=circle]
+  noise [shape=circle]
+  
+  node [shape=plaintext]
+    kc11
+    mc
+    fz
+    ap
+    kappa
+    phi
+    PHI
+    dphi
+    Tc
+    z
+    Fci
+    r
+    noise
+    
+  edge [minlen = 3]
+    kc11 -> Fci
+    mc -> Fci
+    fz -> Fci
+    ap -> Fci
+    kappa -> Fci
+    phi -> PHI
+    dphi -> PHI
+    PHI -> Fci
+    z-> Tc
+    Fci -> Tc
+    r -> Tc
+    noise -> Tc
+}
+")#, width = 200, height = 50)
+```
+
+## Theoretical model, discussion of impact of varying material parameters $m_c$ and $k_{c1.1}$
+
+$m_c$ has a mean of 0.25 and a variance of 0.01.
+
+$k_{c1,1}$ has an mean of 1200 and a variance of 100.
+
+all other parameters are constant.
+
+first, some useful functions are defined: **amf** (**moving average** **filter)** allows filtering the N values, **max_Mc** returns the maximal value of the signal $M_c$ in one revolution (360°)
+
+```{r some usefull functions}
+# limiting phi to 2*pi
+lim22pi <- function(phi){
+N <- length(phi)
+id_reduce <- NULL
+for(k in 1:N){
+    if(phi[k]>2*pi){
+      phi[k:N] <- phi[k:N] -2*pi
+      id_reduce <- append(id_reduce, k)
+    }
+}
+
+  listLim22pi <- list(phi, id_reduce)
+  return(listLim22pi)
+}
+
+# moving average filter
+maf <- function(in_signal, n){
+  N <- length(in_signal)
+  maf_signal <- rep(0, N)
+  for(k1 in 1:n){
+    maf_signal[k1] <- mean(in_signal[1:k1])
+  }
+  for(k2 in (n+1):N){
+    maf_signal[k2] <- mean(in_signal[(k2-n+1):k2])
+
+  }
+  return(maf_signal)
+}
+
+
+# moving average filter
+maf_std_scaler <- function(in_signal, n){
+  N <- length(in_signal)
+  maf_signal <- rep(0, N)
+  maf_sigma <- rep(0,N)
+  for(k1 in 1:n){
+    maf_signal[k1] <- mean(in_signal[1:k1])
+    maf_sigma[k1] <- sd(in_signal[1:k1])
+  }
+  for(k2 in (n+1):N){
+    maf_signal[k2] <- mean(in_signal[(k2-n+1):k2])
+    maf_sigma[k2]  <- sd(in_signal[(k2-n+1):k2])
+
+  }
+  out_signal <- (in_signal - maf_signal) / maf_sigma
+  return(out_signal)
+}
+# find max Mc in 2pi
+max_Mc <- function(id_reduce, Mc, phi){
+  # find max in intevall of 2pi
+  NMax <- length(id_reduce)
+  idx <- 1
+  k3_old <- 1
+  McMax <- NULL
+  phiMcMax <- NULL
+  for(k3 in id_reduce){
+      Mc_temp <- Mc[k3_old:k3]
+      phi_temp <- phi[k3_old:k3]
+      McMax <- append(McMax, max(Mc_temp))
+
+      ii <- which(McMax[idx]==Mc_temp)
+      #print(ii)
+      phiMcMax <- append(phiMcMax, phi_temp[ii[1]])
+      #print("angle:")
+      #print( phi_temp[ii[1]])
+      k3_old <- k3
+      idx <- idx+1
+  }
+  df <- data.frame(McMax, phiMcMax)
+  return(df)
+}
+```
+
+```{r theoretical model by Kienzle}
+calculate_cutting_moment <- function(ap, fz, kappa_deg, phi_deg_vec, mc, kc11,
+                                     z, r_tool, phi_entry_deg, phi_exit_deg) {
+  if (length(phi_deg_vec) != z) {
+    stop("Length of phi_deg_vec must equal z (number of teeth)")
+  }
+
+  # Convert angles to radians
+  kappa_rad <- kappa_deg * pi / 180
+  phi_rad_vec <- phi_deg_vec * pi / 180
+  tooth_offset_deg <- (0:(z - 1)) * 360 / z
+  angle_deg <- phi_deg_vec + tooth_offset_deg  # effective angle in degrees
+  angle_rad <- angle_deg * pi / 180            # for sin()
+
+  # Check engagement
+  Fci <- numeric(z)
+  for (i in 1:z) {
+    if (angle_deg[i] >= phi_entry_deg && angle_deg[i] <= phi_exit_deg) {
+      Fci[i] <- ap *
+                fz^(1 - mc) *
+                sin(kappa_rad)^mc *
+                kc11 *
+                sin(angle_rad[i])^(1 - mc)
+    } else {
+      Fci[i] <- 0
+    }
+  }
+
+  Mc <- sum(Fci) * r_tool
+  return(list(Fci = Fci, Mc = Mc, angle_deg = angle_deg))
+}
+
+```
+
+```{r}
+calculate_cutting_moment <- function(ap, fz, kappa_deg, phi_deg_vec, mc, kc11,
+                                     z, r_tool, phi_entry_deg, phi_exit_deg) {
+  if (length(phi_deg_vec) != z) {
+    stop("Length of phi_deg_vec must equal z (number of teeth)")
+  }
+
+  # Convert angles to radians
+  kappa_rad <- kappa_deg * pi / 180
+  phi_rad_vec <- phi_deg_vec * pi / 180
+  tooth_offset_deg <- (0:(z - 1)) * 360 / z
+  angle_deg <- phi_deg_vec + tooth_offset_deg  # effective angle in degrees
+  angle_rad <- angle_deg * pi / 180            # for sin()
+
+  # Check engagement
+  Fci <- numeric(z)
+  for (i in 1:z) {
+    if (angle_deg[i] >= phi_entry_deg && angle_deg[i] <= phi_exit_deg) {
+      Fci[i] <- ap *
+                fz^(1 - mc) *
+                sin(kappa_rad)^mc *
+                kc11 *
+                sin(angle_rad[i])^(1 - mc)
+    } else {
+      Fci[i] <- 0
+    }
+  }
+
+  Mc <- sum(Fci) * r_tool
+  return(list(Fci = Fci, Mc = Mc, angle_deg = angle_deg))
+}
+
+```
+
+```{r}
+z <- 4
+#phi_vec <- rep(30, z)  # or individual values per tooth
+res_append <- NULL
+phi <- seq(from = 0, to = 36000, length.out = 10000)
+for (n in 1: length(phi)){
+  phi_vec <- rep(phi[n], z)
+  res <- calculate_cutting_moment(
+  ap = 2,
+  fz = 0.1,
+  kappa_deg = 60,
+  phi_deg_vec = phi_vec,
+  mc = 0.25,
+  kc11 = 1800,
+  z = z,
+  r_tool = 10,
+  phi_entry_deg = 0,
+  phi_exit_deg = 180  # e.g. half-immersion
+  
+)
+  print(res$Fci)
+  res_append <- append(res_append, res)
+}
+print(res_append$Fci)
+print(paste("Cutting moment Mc =", res$Mc, "N·mm"))
+
+```
+
+The data are imported. The important signals are the torque generating current of the main spindle, the rotational velocity of the main spindle and the time. Based on this data the the toque and the angular position can be calculated.
+
+\$k_m\$: motor torque constant
+
+$I_q$: torque generating current
+
+$M_c$: spindle torque
+
+$M_c (t) = k_m I_q$
+
+The examples are plotted for illustrative purpose
+
+```{r read in milling data}
+process_mill <- read.csv("..\\data\\Trace_0622_172347.csv")
+#process_mill <- read.csv("..\\data\\Trace_0331_150521.csv")
+iqSp <- process_mill$X..Nck..SD.nckServoDataActCurr32..u1..4.
+velSp <- process_mill$X..Nck..SD.nckServoDataActVelMot32..u1..4./36 * 0.1047198 # rad/s
+time <- process_mill$time
+dtime <- diff(time)
+dtime <- append(dtime, 0.002)
+phi_real <-cumsum(velSp)*0.002
+df_phi_real <- lim22pi(phi_real)
+phi_real <- df_phi_real[[1]]
+N <- length(iqSp)
+raund_count = 0
+km <- 1.3
+Mc <- iqSp * km
+Mc_real4STAN <- iqSp * km
+
+df_plot_data_complete <- data.frame(iqSp = iqSp, 
+                                    velSp = velSp, 
+                                    time = time, 
+                                    dtime = dtime, 
+                                    phi = phi_real, 
+                                    Mc = Mc)
+
+ggplot(df_plot_data_complete) + 
+  geom_line(aes(x = time, y = iqSp)) + 
+  geom_line(aes(x = time, y = maf(iqSp, 14), colour="current"))+ 
+  geom_line(aes(x = time, y = Mc)) + 
+  geom_line(aes(x = time, y = maf(Mc, 14), colour="torque"))
+  
+
+ggplot(df_plot_data_complete) + 
+  geom_line(aes(x = time, y = velSp)) + 
+  geom_line(aes(x = time, y = maf(velSp, 14), colour="Spindle velocity")) 
+
+```
+
+For further analysis, only the cutting process is relevant. Therefore the time span in of the cutting process is separated. The result is plotted.
+
+Since the amplitude is the relevant value to evaluate, the signals are analysed per \$0\$\$ to \$2\pi\$\$ interval and the maximal value of $M_c$ is stored.
+
+```{r define value range to evaluate}
+id_reduce <- NULL
+
+
+# max_Mc
+# evaluation data in process: 4s to 13s
+eval_times <- c(4, 13)
+eval_idx <- which((time>=eval_times[1]) & (time<=eval_times[2]))
+
+# machine and friction effects
+no_load_times <- c(0, 2.0)
+no_load_idx <- which((time>=no_load_times[1]) & (time<=no_load_times[2]))
+
+# correct current and resulting torque
+no_load_mean_iq <- mean(iqSp[no_load_idx])
+no_load_mean_Mc <- mean(Mc[no_load_idx])
+# plot again with correction
+df_plot_data_complete <- mutate(df_plot_data_complete, iqSp_corrected = iqSp - no_load_mean_iq, 
+                                Mc_corrected = Mc - no_load_mean_Mc) 
+
+ggplot(df_plot_data_complete) + 
+  geom_line(aes(x = time, y = iqSp_corrected)) + 
+  geom_line(aes(x = time, y = maf(iqSp_corrected, 14), colour="current"))
+
+
+ggplot(df_plot_data_complete) + 
+  geom_line(aes(x = time, y = Mc_corrected)) + 
+  geom_line(aes(x = time, y = maf(Mc_corrected, 14), colour="torque"))
+
+                     
+# data to be analyesed
+df2EvalData <- data.frame(iqSp = iqSp[eval_idx]-no_load_mean_iq, 
+                          velSp = velSp[eval_idx],
+                          time = time[eval_idx], 
+                          phi = phi_real[eval_idx], 
+                          Mc = Mc[eval_idx]-no_load_mean_Mc)
+
+
+dfMcMax <- max_Mc(id_reduce = eval_idx, Mc[eval_idx], phi_real[eval_idx])
+dfMcMax_clean <- na.omit(dfMcMax)
+```
+
+```{r some nice plots}
+df_plots <- df2EvalData |> mutate( mafMc02 = maf(Mc, 7), 
+                                   mafMc10 = maf(Mc, 30))
+ggplot(df_plots, aes(x = phi*180/pi, y = Mc)) + 
+  geom_point()+
+  coord_polar()
+ggplot(df_plots, aes(x = phi*180/pi, y = Mc)) + 
+  geom_point()
+ggplot(df_plots, aes(x = time, y = Mc)) + 
+  geom_point() +
+  geom_line(aes(x=time, mafMc02), color="red") +
+  geom_line(aes(x=time, mafMc10), color="blue")
+
+
+
+df_plots_arranged <- arrange(df_plots, phi, by_group = TRUE)
+
+## max values of Mc
+dfMcMax_clean <- dfMcMax_clean |> mutate(mafMcMax=maf(McMax, 10))
+ggplot(dfMcMax_clean, aes(x=phiMcMax, y=McMax))+
+  geom_line()+
+  geom_line(aes(x=phiMcMax, y=mafMcMax), color="red")
+```
+
+The value of $m_c$ is suposed to be beta distributed. To calculate the values $\alpha$ and $\beta$ based on the assumption that the mean value of $m_c$ is 0.25 and the standard deviation of 0.1 considering the characteristics of a beta distribution. {\displaystyle \operatorname {E} \[X\]={\frac {\\alpha }{\\alpha +\\beta }}!} {\displaystyle \operatorname {var} \[X\]={\frac {\\alpha \\beta }{(\\alpha +\\beta )\^{2}(\\alpha +\\beta +1)}}!}
+
+```{r beta distribution alpha and beta by mean and varianz, echo = TRUE}
+beta_dist_param <- function(m, var){
+  alpha <- m^2*(1-m)/var - m
+  beta <- alpha * (1-m)/m
+  param <- data.frame(alpha, beta)
+  return(param)
+}
+
+
+beta_dist_mc <- beta_dist_param(mc, 0.02^2)
+beta_dist_mc
+
+beta_dist_kc <- beta_dist_param(kc11, 977^2)
+beta_dist_kc
+
+# test the result
+N <- 1000
+
+x = seq(0, 1, length.out=N)
+xnorm = seq(0, 6000, length.out=N)
+m_kc <- 2306
+sd_kc <- 977
+beta_init_mc <- dbeta(x, beta_dist_mc$alpha, beta_dist_mc$beta)
+norm_init_kc <- dnorm(xnorm, m_kc, sd_kc)
+df_prior_dist <- data.frame(x = x,
+                 xnorm = xnorm,
+                 beta_init_mc = beta_init_mc,
+                 norm_init_kc = norm_init_kc)
+
+g_mc <- ggplot(df_prior_dist, aes(x=x, y=beta_init_mc)) +
+  geom_line()
+g_mc
+g_kc <- ggplot(df_prior_dist, aes(x=xnorm, y=norm_init_kc)) +
+  geom_line()
+g_kc
+```
+
+new idea to calculate the posterior directly (after discussion with Dr. Muñoz)
+
+```{r}
+N <- length(dfMcMax$McMax)
+mc_sample <- rep(0, N)
+kc1_sample <- rep(0, N)
+ap <- 0.001  # cutting depth in m
+fz <- 0.00015 # feed per tooth in m
+kappa <- 105/180*pi # main angle of tool insert in degree
+z <- 4     # number of cutting edges [2, 3, 4]
+kc1 <- rnorm(1, kc11*1e6, 977e6)
+McMax <- dfMcMax_clean$McMax - no_load_mean_Mc
+temp_counter = 0  
+for (k in 1:N){
+  mc_sample[k] <- (log(McMax[k])-log(rtool*ap*fz*kc1*sin(kappa)))/(log(sin(kappa)*fz))
+  if(is.na(mc_sample[k])){
+    #print(k)
+    temp_counter=temp_counter+1
+  }
+}
+print(temp_counter)
+mc_sample <- na.omit(mc_sample)
+mc_mean <- mean(mc_sample)
+mc_sd <- sd(mc_sample)
+mc <- rnorm(1,mc_mean, mc_sd)
+for (k in 1:N){
+  kc1_sample[k] <- Mc[k] / (rtool*ap*(fz)^(1-mc)*sin(kappa)^(1-mc))
+}
+#df_manual <- data.frame(mc_sample, kc1_sample)
+
+```
+
+New intent with STAN model import relevant libs
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gt)
+library(ggplot2)
+library(rstantools)
+library(bayesplot)
+library(cmdstanr)
+```
+
+```{r data for STAN model}
+STAN_data_mill_cont <- list(k = length(Mc_real4STAN), 
+                  Mc = Mc_real4STAN,
+                  phi = (phi_real),
+                  ap = ap, 
+                  fz = fz,
+                  z  = z,
+                  rtool = rtool,
+                  kappa = kappa, 
+                  m_kc = m_kc, 
+                  tau_kc = 1/(sd_kc)^2,
+                  alpha_mc = beta_dist_mc$alpha,
+                  beta_mc = beta_dist_mc$beta
+                  )
+
+```
+
+```{r}
+set_cmdstan_path("C:/Users/TRUDOLF/.cmdstan/cmdstan-2.36.0")
+STAN_kienzle <- cmdstan_model("STAN_kienzle_cont.stan")
+print(STAN_kienzle)
+```
+
+![](images/clipboard-9133593.png)
+
+```{r fit_STAN_kienzle_cont}
+#model_fit <- rstan::sampling(STAN_kienzle_cont, 
+#                             data = STAN_data_mill_cont,
+#                             refresh = 0)
+model_fit <- STAN_kienzle$sample(data = STAN_data_mill_cont,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 1000,
+  step_size = 0.1,)
+```
