@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from kienzle_utils import MillingSignalUtils as MSU
-from kienzle_model import KienzleModel
+from src.kienzle_utils import MillingSignalUtils as MSU
+from src.kienzle_model import KienzleModel as KienzleModel 
 
 # ── 1.  Define process parameters ────────────────────────────────────────────
 fs      = 500           # sampling frequency, Hz

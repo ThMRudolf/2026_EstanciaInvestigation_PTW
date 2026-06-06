@@ -12,8 +12,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from kienzle_utils import MillingSignalUtils as MSU
-from kienzle_model import KienzleModel
+from src.kienzle_utils import MillingSignalUtils as MSU
+from src.kienzle_model import KienzleModel
 
 # ── 1.  Process parameters ────────────────────────────────────────────────────
 fs, t_total = 500, 0.5
