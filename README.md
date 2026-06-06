@@ -110,7 +110,7 @@ $$\{Var}(\eta) = \frac{A^2}{3} + \sigma^2$$
 
 The signal-to-noise ratio in dB is:
 
-$$\{SNR} = 10 \log_{10}\!\left(\frac{\operatorname{Var}(M_c^{\text{clean}})}{\operatorname{Var}(\eta)}\right)$$
+$$\{SNR} = 10 \log_{10}\!\left(\frac{\{Var}(M_c^{\text{clean}})}{\{Var}(\eta)}\right)$$
 
 Note that the Gaussian mean *μ* shifts the signal baseline but does not contribute to noise power.
 
