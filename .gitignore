@@ -192,6 +192,7 @@ cython_debug/
 
 # Ruff stuff:
 .ruff_cache/
+ae_estim/
 
 # PyPI configuration file
 .pypirc
@@ -210,3 +211,4 @@ __marimo__/
 
 # file extentions
 *.png
+
