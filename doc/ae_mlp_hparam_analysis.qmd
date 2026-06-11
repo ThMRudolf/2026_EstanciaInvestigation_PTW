@@ -1,0 +1,175 @@
+---
+title: "Hyperparameter Optimization Results — ae Estimation MLP"
+subtitle: "Grid Search vs. Bayesian TPE Analysis"
+author: "Thomas M. Rudolf"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    fig-align: center
+  pdf:
+    toc: true
+    number-sections: true
+    geometry: margin=2.5cm
+    fontsize: 11pt
+execute:
+  echo: false
+  warning: false
+bibliography: referencias_final.bib
+---
+
+# Overview
+
+Three complementary diagnostic figures were generated to evaluate the effectiveness
+of Bayesian Tree-structured Parzen Estimator (TPE) optimization against a full
+Grid Search for tuning the Multi-Layer Perceptron (MLP) used to estimate radial
+depth of cut ($a_e$) from spindle motor current signals. The figures address (i) the
+aggregate performance and convergence of both strategies, (ii) the sensitivity of
+validation loss to pairwise hyperparameter combinations identified via Grid Search,
+and (iii) the functional variance decomposition (fANOVA) of hyperparameter importance
+as computed by TPE. Together, they provide a complete picture of the optimization
+landscape governing the MLP's generalization behaviour.
+
+---
+
+# Figure 1 — Grid Search vs. Bayesian TPE: Overall Performance
+
+## Panel (A) — Validation Loss Distributions
+
+The Grid Search explored an exhaustive grid of $n = 216$ configurations, whereas
+Bayesian TPE required only $n = 80$ trials — a 63% reduction in computational
+expenditure. The Grid Search distribution is tightly concentrated between
+$\mathcal{L}_\text{Huber} \approx 0.025$ and $0.060$, suggesting that a narrow
+effective region in the hyperparameter space was identified consistently across
+configurations. The TPE distribution is noticeably wider, extending past $0.150$,
+which reflects the expected exploratory behaviour during early trials before the
+surrogate model has accumulated sufficient observations to guide sampling reliably.
+
+Critically, the dashed medians of both distributions converge to essentially the
+same best-region performance ($\mathcal{L}_\text{Huber} \approx 0.022$), confirming
+that TPE reaches the global optimum at a fraction of the Grid Search cost.
+The heavier right tail of the TPE distribution is not a concern: it is a structural
+artifact of random initialization in trials 1–20 before surrogate guidance becomes
+effective.
+
+## Panel (B) — TPE Convergence Trajectory
+
+The "best so far" curve drops steeply within the first 15 trials, indicating that
+the surrogate model locates the high-performing region of the hyperparameter space
+very early in the search. By trial $\approx 55$, the best-so-far value effectively
+reaches the Grid Search best of $\mathcal{L}_\text{Huber} = 0.0221$ (shown as the
+blue dashed reference line). No further improvement is observed beyond trial 55,
+confirming that the optimization has saturated. This is a healthy convergence profile:
+steep early gains followed by a stable plateau. The implication is that 55–60 TPE
+trials would have been sufficient; the final 20 trials served only to confirm
+convergence rather than to discover new optima.
+
+## Panels (C) and (D) — Parity Plots
+
+Both the Grid Search best configuration and the TPE best configuration yield
+identical $R^2 = 0.984$, confirming that the two optimal architectures are
+functionally equivalent from a predictive standpoint. However, TPE achieves a
+mean absolute error (MAE) of $0.377\,\text{mm}$ compared to $0.453\,\text{mm}$
+for the Grid Search optimum — a 17% reduction in absolute estimation error.
+
+Both models exhibit the greatest scatter at $a_e = 40\,\text{mm}$ (the largest
+radial engagement level tested), where prediction variance increases. This is
+physically consistent: higher $a_e$ values involve more complex engagement dynamics
+and a larger fraction of the cutting torque signal is saturated near the motor's
+rated load. At $a_e \approx 26\,\text{mm}$, both models exhibit a slight
+underprediction tendency, which may reflect reduced signal-to-noise ratio at low
+radial engagement. The systematic point clustering visible at
+$a_e \in \{26, 32, 38, 40\}\,\text{mm}$ confirms that the experimental design uses
+discrete $a_e$ levels; no interpolation across unseen engagement values is being
+assessed in the current validation set.
+
+---
+
+# Figure 2 — Grid Search Sensitivity Heatmaps
+
+## Left Panel — Dropout $\times$ n\_layers
+
+The global minimum ($\mathcal{L}_\text{Huber} = 0.022$) occurs at
+$\text{dropout} = 0.30$, $\text{n\_layers} = 3$. This is a strong, isolated optimum:
+no other combination in the heatmap approaches this value. Performance degrades
+substantially toward $\text{dropout} = 0.45$ with $\text{n\_layers} = 1$
+($\mathcal{L} = 0.028$) or $\text{n\_layers} = 2$ ($\mathcal{L} = 0.027$), indicating
+that shallow networks with high dropout are over-regularized and lose the representational
+capacity required for physics-informed feature regression.
+
+Examining the column-wise trend, $\text{n\_layers} = 3$ consistently yields the lowest
+loss across all dropout levels, confirming that depth is the dominant architectural
+factor in this panel. Moderate dropout ($0.15$–$0.30$) acts as a beneficial
+regularizer, while $\text{dropout} = 0.45$ degrades performance regardless of depth.
+It has to be mentioned that the absence of an $\text{n\_layers} = 4$ condition in the
+Grid Search represents a search boundary; whether additional depth would yield further
+improvement remains an open question.
+
+## Right Panel — Units per Layer $\times$ n\_segments
+
+The minimum ($\mathcal{L}_\text{Huber} = 0.022$) appears at
+$\text{units} = 64$, $\text{n\_segments} = 2$. The most important observation is that
+performance degrades monotonically as $\text{n\_segments}$ increases beyond 2,
+regardless of units per layer. At $\text{n\_segments} = 7$, all configurations
+exceed $\mathcal{L} = 0.048$ — more than double the optimal loss. This reveals a
+clear over-segmentation effect: excessive temporal fragmentation of the current
+signal destroys the structural information that the MLP relies upon to reconstruct
+$a_e$.
+
+The optimum at $\text{n\_segments} = 2$ is physically interpretable: two segments
+plausibly correspond to the engagement phase and the steady-state cutting phase of
+a tooth pass, a decomposition that carries genuine mechanical meaning. Units per
+layer $= 128$ offers only marginal improvement over units $= 64$ at
+$\text{n\_segments} = 2$ ($\mathcal{L} = 0.025$ vs. $0.022$), while units $= 32$
+consistently underperforms across all segment counts. This confirms that network
+capacity matters, but only up to a threshold of 64 units per layer, beyond which
+returns diminish rapidly.
+
+---
+
+# Figure 3 — TPE fANOVA Hyperparameter Importance
+
+Dropout dominates the fANOVA decomposition with an importance score of approximately
+$0.55$ — exceeding the combined contribution of all remaining hyperparameters.
+This is the central finding of the optimization: regularization strength is the
+primary determinant of generalization performance in this MLP, not architectural
+size or temporal resolution strategy. n\_segments and n\_layers share roughly equal
+importance ($\approx 0.19$ each), confirming that both the temporal feature
+extraction approach and the network depth exert comparable influence on validation
+loss. units\_l0 contributes only $\approx 0.06$, consistent with the heatmap
+observation that model performance is relatively insensitive to layer width once
+the minimum capacity threshold of 64 units is satisfied.
+
+The fANOVA result also implies that future ablation studies or continued optimization
+should prioritize dropout range exploration before investing in architectural search.
+Specifically, the near-equivalence of n\_segments and n\_layers importance suggests
+that both could be jointly tuned in a lower-dimensional follow-up search without loss
+of coverage.
+
+---
+
+# Synthesis
+
+The three figures together articulate a coherent optimization narrative.
+The MLP's generalization capacity is governed primarily by dropout regularization,
+followed comparably by temporal segmentation strategy (n\_segments) and network
+depth (n\_layers), with layer width contributing minimally beyond a capacity floor.
+Bayesian TPE identified the optimal configuration —
+$\text{dropout} = 0.30$, $\text{n\_layers} = 3$, $\text{units} = 64$,
+$\text{n\_segments} = 2$ — with 63% fewer evaluations than Grid Search, while
+achieving a 17% reduction in MAE ($0.377\,\text{mm}$ vs. $0.453\,\text{mm}$).
+The parity plots confirm an excellent $R^2 = 0.984$ for both methods, but the
+TPE-tuned model's lower MAE is the operationally relevant metric for
+in-process $a_e$ estimation.
+
+The optimum at $\text{n\_segments} = 2$ deserves particular emphasis in the
+paper: it carries a physics-based interpretation tied to the tooth engagement
+phases of the milling cycle, which strengthens the argument that the feature
+engineering strategy captures genuine process information rather than spurious
+signal correlations. This eliminates the need to rely solely on empirical
+justification for the temporal segmentation choice and connects the data-driven
+model back to the underlying cutting mechanics.
