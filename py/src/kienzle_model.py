@@ -16,7 +16,7 @@ into account.
 
 Noise model
 -----------
-Two independent additive noise sources are supported and can be combined:
+Up to three additive noise sources are supported and can be combined:
 
     white_noise_amplitude : float
         Peak amplitude of uniform white noise  U(−A, +A).
@@ -27,14 +27,33 @@ Two independent additive noise sources are supported and can be combined:
         A non-zero mean models a systematic offset (e.g. sensor drift).
 
     normal_noise_std : float
-        Standard deviation σ of the Gaussian noise component.
+        Standard deviation σ of the Gaussian noise component.  Used
+        only when the Gamma noise-level model (below) is *not*
+        configured.
+
+    gamma_shape, gamma_scale, gamma_loc : float
+        Shape / scale / location parameters of a Gamma distribution
+        fitted to empirical run-to-run noise levels (e.g. the
+        ``std_iq_no_load`` statistic measured across multiple no-load
+        spindle recordings). When *gamma_shape* and *gamma_scale* are
+        both supplied, a fresh noise level
+
+            σ_run ~ Gamma(gamma_shape, scale=gamma_scale) + gamma_loc
+
+        is drawn **once per call** to :meth:`NoiseModel.sample`, and the
+        Gaussian component is generated as N(normal_noise_mean, σ_run).
+        This reproduces the observed spread of no-load current-noise
+        levels across recordings/runs, instead of using a single fixed
+        ``normal_noise_std`` for every simulation.
 
 The total noise added to each sample is:
 
     η(t) = η_white(t) + η_normal(t)
 
-where η_white ~ U(−A, +A) and η_normal ~ N(μ, σ).
-Either component is suppressed when its amplitude / std is set to 0.
+where η_white ~ U(−A, +A) and η_normal ~ N(μ, σ), with σ either fixed
+(``normal_noise_std``) or drawn per-run from the Gamma noise-level model.
+Each component is suppressed when its amplitude / std is set to 0 (or,
+for the Gamma component, when *gamma_shape*/*gamma_scale* are None).
 
 Usage
 -----
@@ -53,9 +72,15 @@ Usage
         r_tool              = 10.0,         # mm
         kappa_deg           = 90.0,
         km                  = 1.3,
+        I0                  = 1.8,           # A  — no-load current offset
         white_noise_amplitude = 30.0,       # N·mm  — uniform white noise ±30
         normal_noise_mean   = 5.0,          # N·mm  — systematic offset
         normal_noise_std    = 20.0,         # N·mm  — Gaussian spread
+                                             #         (ignored if gamma_shape/
+                                             #          gamma_scale are set)
+        gamma_shape         = 161.76,       # Gamma fit of std_iq_no_load
+        gamma_scale         = 0.00124,      #   -> drives per-run sigma
+        gamma_loc           = 0.0,
         seed                = 42,
     )
 
@@ -95,6 +120,22 @@ class NoiseModel:
     *σ* captures thermal and amplifier noise, which is well described by a
     normal distribution in practice.
 
+    Gamma-distributed noise level (run-to-run variability)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    In practice the Gaussian noise *level* σ itself varies from one
+    recording/run to the next (e.g. the empirical distribution of
+    ``std_iq_no_load`` across many no-load spindle recordings is
+    right-skewed, not constant).  When *gamma_shape* and *gamma_scale*
+    are both provided, each call to :meth:`sample` first draws
+
+        σ_run ~ Gamma(gamma_shape, scale=gamma_scale) + gamma_loc
+
+    and then generates the Gaussian component as N(normal_mean, σ_run).
+    This overrides *normal_std* — i.e. *normal_std* is only used as the
+    fixed σ when the Gamma noise-level model is not configured.  The most
+    recently drawn σ_run is stored in :attr:`last_sigma_no_load` for
+    diagnostics.
+
     Parameters
     ----------
     white_amplitude : float
@@ -103,8 +144,19 @@ class NoiseModel:
     normal_mean : float
         Mean *μ* of the Gaussian component.  Default 0 (zero-mean noise).
     normal_std : float
-        Standard deviation *σ* of the Gaussian component.  Set to 0 to
+        Standard deviation *σ* of the Gaussian component, used when the
+        Gamma noise-level model below is not configured.  Set to 0 to
         disable.
+    gamma_shape : float, optional
+        Shape parameter *a* of the Gamma distribution describing the
+        run-to-run noise level σ_run.  Must be > 0.  When set together
+        with *gamma_scale*, this takes precedence over *normal_std*.
+    gamma_scale : float, optional
+        Scale parameter *θ* of the Gamma distribution (``scipy``
+        convention: mean = gamma_loc + gamma_shape · gamma_scale).
+        Must be > 0.
+    gamma_loc : float, optional
+        Location (shift) parameter of the Gamma distribution.  Default 0.
     seed : int or None
         Random seed for reproducibility.  Passed to
         ``numpy.random.default_rng``.
@@ -115,28 +167,87 @@ class NoiseModel:
         white_amplitude: float = 0.0,
         normal_mean: float = 0.0,
         normal_std: float = 0.0,
+        gamma_shape: Optional[float] = None,
+        gamma_scale: Optional[float] = None,
+        gamma_loc: float = 0.0,
         seed: Optional[int] = None,
     ) -> None:
         if white_amplitude < 0:
             raise ValueError("white_amplitude must be ≥ 0.")
         if normal_std < 0:
             raise ValueError("normal_std must be ≥ 0.")
+        if gamma_shape is not None and gamma_shape <= 0:
+            raise ValueError("gamma_shape must be > 0.")
+        if gamma_scale is not None and gamma_scale <= 0:
+            raise ValueError("gamma_scale must be > 0.")
+        if (gamma_shape is None) != (gamma_scale is None):
+            raise ValueError(
+                "gamma_shape and gamma_scale must be supplied together "
+                "(both set, or both None)."
+            )
 
         self.white_amplitude = float(white_amplitude)
         self.normal_mean     = float(normal_mean)
         self.normal_std      = float(normal_std)
+        self.gamma_shape     = float(gamma_shape) if gamma_shape is not None else None
+        self.gamma_scale     = float(gamma_scale) if gamma_scale is not None else None
+        self.gamma_loc       = float(gamma_loc)
+        self.last_sigma_no_load: Optional[float] = None
         self._rng            = np.random.default_rng(seed)
+
+    # ------------------------------------------------------------------
+    @property
+    def use_gamma_noise_level(self) -> bool:
+        """True when the Gamma noise-level model (σ_run) is configured."""
+        return self.gamma_shape is not None and self.gamma_scale is not None
+
+    # ------------------------------------------------------------------
+    def sample_sigma(self) -> float:
+        """
+        Draw a single noise-level σ_run from the configured Gamma
+        distribution:
+
+            σ_run ~ Gamma(gamma_shape, scale=gamma_scale) + gamma_loc
+
+        The result is cached in :attr:`last_sigma_no_load`.
+
+        Returns
+        -------
+        sigma_run : float
+
+        Raises
+        ------
+        RuntimeError
+            If *gamma_shape*/*gamma_scale* were not configured.
+        """
+        if not self.use_gamma_noise_level:
+            raise RuntimeError(
+                "Gamma noise-level model not configured "
+                "(gamma_shape / gamma_scale are None)."
+            )
+        sigma_run = (
+            self._rng.gamma(shape=self.gamma_shape, scale=self.gamma_scale)
+            + self.gamma_loc
+        )
+        self.last_sigma_no_load = float(sigma_run)
+        return self.last_sigma_no_load
 
     # ------------------------------------------------------------------
     def sample(self, N: int) -> np.ndarray:
         """
         Draw *N* additive noise samples.
 
+        If the Gamma noise-level model is configured (``gamma_shape``
+        and ``gamma_scale`` both set), a fresh σ_run is drawn once via
+        :meth:`sample_sigma` and used as the standard deviation of the
+        Gaussian component for this call — i.e. *normal_std* is ignored
+        in that case.  Otherwise the fixed *normal_std* is used.
+
         Returns
         -------
         noise : np.ndarray, shape (N,)
-            Sum of white and Gaussian components.  Zero array when both
-            amplitudes are 0.
+            Sum of white and Gaussian components.  Zero array when no
+            component is active.
         """
         noise = np.zeros(N)
 
@@ -145,7 +256,10 @@ class NoiseModel:
                 -self.white_amplitude, self.white_amplitude, size=N
             )
 
-        if self.normal_std > 0.0 or self.normal_mean != 0.0:
+        if self.use_gamma_noise_level:
+            sigma_run = self.sample_sigma()
+            noise += self._rng.normal(self.normal_mean, sigma_run, size=N)
+        elif self.normal_std > 0.0 or self.normal_mean != 0.0:
             noise += self._rng.normal(self.normal_mean, self.normal_std, size=N)
 
         return noise
@@ -161,6 +275,14 @@ class NoiseModel:
             Var(η) = Var(white) + Var(normal)
                    = A² / 3  +  σ²
 
+        When the Gamma noise-level model is configured, σ is itself
+        random (σ_run ~ Gamma(gamma_shape, scale=gamma_scale) + gamma_loc).
+        In that case the *expected* Gaussian noise power is used:
+
+            E[σ_run²] = Var(σ_run) + E[σ_run]²
+                      = gamma_shape · gamma_scale²
+                        + (gamma_loc + gamma_shape · gamma_scale)²
+
         (The Gaussian mean *μ* shifts the signal baseline but does not
         contribute to noise power.)
 
@@ -173,7 +295,14 @@ class NoiseModel:
         -------
         snr : float  (dB)
         """
-        noise_var = (self.white_amplitude ** 2) / 3.0 + self.normal_std ** 2
+        if self.use_gamma_noise_level:
+            mean_sigma = self.gamma_loc + self.gamma_shape * self.gamma_scale
+            var_sigma  = self.gamma_shape * self.gamma_scale ** 2
+            expected_sigma_sq = var_sigma + mean_sigma ** 2
+            noise_var = (self.white_amplitude ** 2) / 3.0 + expected_sigma_sq
+        else:
+            noise_var = (self.white_amplitude ** 2) / 3.0 + self.normal_std ** 2
+
         if noise_var == 0.0:
             return float("inf")
         return 10.0 * np.log10(signal_std ** 2 / noise_var)
@@ -182,15 +311,27 @@ class NoiseModel:
     @property
     def is_active(self) -> bool:
         """True when at least one noise component has non-zero amplitude."""
-        return self.white_amplitude > 0.0 or self.normal_std > 0.0 or self.normal_mean != 0.0
+        return (
+            self.white_amplitude > 0.0
+            or self.normal_std > 0.0
+            or self.normal_mean != 0.0
+            or self.use_gamma_noise_level
+        )
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
+        gamma_repr = (
+            f", gamma_shape={self.gamma_shape}, "
+            f"gamma_scale={self.gamma_scale}, gamma_loc={self.gamma_loc}"
+            if self.use_gamma_noise_level
+            else ""
+        )
         return (
             f"NoiseModel("
             f"white_amplitude={self.white_amplitude}, "
             f"normal_mean={self.normal_mean}, "
-            f"normal_std={self.normal_std})"
+            f"normal_std={self.normal_std}"
+            f"{gamma_repr})"
         )
 
 
@@ -232,6 +373,10 @@ class KienzleModel:
         Tool cutting-edge angle κ (degrees).  Default 90°.
     km : float, optional
         Motor torque constant k_m (N·mm / A).  Default 1.3.
+    I0 : float, optional
+        No-load spindle current offset (A), added to the
+        torque-derived current:  I(t) = M_c(t) / k_m + I0.
+        Default 0.0 (no offset).
     phi0_deg : float, optional
         Initial angular offset of the first tooth at t = 0 (degrees).
         Default 0.
@@ -242,7 +387,22 @@ class KienzleModel:
         Mean *μ* of the additive Gaussian noise component.  Default 0.
     normal_noise_std : float, optional
         Standard deviation *σ* of the Gaussian noise component.
-        Default 0 (disabled).
+        Default 0 (disabled). Ignored when *gamma_shape* and
+        *gamma_scale* are both set (see below).
+    gamma_shape : float, optional
+        Shape parameter of a Gamma distribution describing run-to-run
+        noise-level variability (e.g. fitted to ``std_iq_no_load``
+        across multiple no-load recordings). When supplied together
+        with *gamma_scale*, a fresh σ_run is drawn from this Gamma
+        distribution each time the noise is sampled, and used as the
+        standard deviation of the Gaussian noise component instead of
+        *normal_noise_std*. Default None (disabled).
+    gamma_scale : float, optional
+        Scale parameter of the Gamma distribution (``scipy`` convention:
+        mean = gamma_loc + gamma_shape · gamma_scale). Must be supplied
+        together with *gamma_shape*. Default None (disabled).
+    gamma_loc : float, optional
+        Location (shift) parameter of the Gamma distribution. Default 0.
     seed : int or None, optional
         Random seed forwarded to the internal NoiseModel for
         reproducible simulations.  Default None (non-deterministic).
@@ -263,12 +423,16 @@ class KienzleModel:
     r_tool: float = 10.0
     kappa_deg: float = 90.0
     km: float = 1.3
+    I0: float = 0.0
     phi0_deg: float = 0.0
 
     # ── noise parameters ──────────────────────────────────────────────
     white_noise_amplitude: float = 0.0
     normal_noise_mean: float = 0.0
     normal_noise_std: float = 0.0
+    gamma_shape: Optional[float] = None
+    gamma_scale: Optional[float] = None
+    gamma_loc: float = 0.0
     seed: Optional[int] = None
 
     # ── internal fields (not part of constructor signature) ───────────
@@ -288,6 +452,9 @@ class KienzleModel:
             white_amplitude = self.white_noise_amplitude,
             normal_mean     = self.normal_noise_mean,
             normal_std      = self.normal_noise_std,
+            gamma_shape     = self.gamma_shape,
+            gamma_scale     = self.gamma_scale,
+            gamma_loc       = self.gamma_loc,
             seed            = self.seed,
         )
 
@@ -299,6 +466,9 @@ class KienzleModel:
         white_amplitude: Optional[float] = None,
         normal_mean: Optional[float] = None,
         normal_std: Optional[float] = None,
+        gamma_shape: Optional[float] = None,
+        gamma_scale: Optional[float] = None,
+        gamma_loc: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> None:
         """
@@ -314,25 +484,43 @@ class KienzleModel:
         normal_mean : float, optional
             New mean for the Gaussian noise component.
         normal_std : float, optional
-            New standard deviation for the Gaussian noise component.
+            New standard deviation for the Gaussian noise component
+            (used only if the Gamma noise-level model is disabled).
+        gamma_shape : float, optional
+            New shape parameter for the Gamma noise-level model. Pass
+            together with *gamma_scale* to enable/update it.
+        gamma_scale : float, optional
+            New scale parameter for the Gamma noise-level model.
+        gamma_loc : float, optional
+            New location parameter for the Gamma noise-level model.
         seed : int or None, optional
             New random seed (resets the internal RNG).
 
-        Example
-        -------
+        Examples
+        --------
         >>> model.set_noise(white_amplitude=0, normal_std=15.0)
+
+        >>> # Enable Gamma-distributed noise level (e.g. from a fit to
+        >>> # std_iq_no_load), drawing a fresh sigma per simulation run:
+        >>> model.set_noise(gamma_shape=161.76, gamma_scale=0.00124, gamma_loc=0.0)
         """
         wa  = white_amplitude if white_amplitude is not None else self._noise.white_amplitude
         nm  = normal_mean     if normal_mean     is not None else self._noise.normal_mean
         ns  = normal_std      if normal_std      is not None else self._noise.normal_std
+        gs  = gamma_shape     if gamma_shape     is not None else self._noise.gamma_shape
+        gsc = gamma_scale     if gamma_scale     is not None else self._noise.gamma_scale
+        gl  = gamma_loc       if gamma_loc       is not None else self._noise.gamma_loc
         sd  = seed            if seed            is not None else self.seed
 
         # Update dataclass fields for consistency with __str__
         self.white_noise_amplitude = wa
         self.normal_noise_mean     = nm
         self.normal_noise_std      = ns
+        self.gamma_shape           = gs
+        self.gamma_scale           = gsc
+        self.gamma_loc             = gl
         self.seed                  = sd
-        self._noise                = NoiseModel(wa, nm, ns, sd)
+        self._noise                = NoiseModel(wa, nm, ns, gs, gsc, gl, sd)
 
     # ------------------------------------------------------------------
     # Core single-instant calculation
@@ -442,6 +630,19 @@ class KienzleModel:
         return Mc_vec
 
     # ------------------------------------------------------------------
+    # Last drawn Gamma noise-level sigma (diagnostic)
+    # ------------------------------------------------------------------
+    @property
+    def last_sigma_no_load(self) -> Optional[float]:
+        """
+        Most recently drawn σ_run from the Gamma noise-level model
+        (``None`` if the Gamma model is not configured or has not been
+        sampled yet, e.g. before the first call to
+        :meth:`torque_time_series` with ``add_noise=True``).
+        """
+        return self._noise.last_sigma_no_load
+
+    # ------------------------------------------------------------------
     # Noise-only time series (diagnostic)
     # ------------------------------------------------------------------
     def noise_time_series(self, N: Optional[int] = None) -> np.ndarray:
@@ -512,7 +713,7 @@ class KienzleModel:
         add_noise: bool = True,
     ) -> np.ndarray:
         """
-        Equivalent spindle current  I_q(t) = M_c(t) / k_m  (A).
+        Equivalent spindle current  I_q(t) = M_c(t) / k_m + I0  (A).
 
         Parameters
         ----------
@@ -525,7 +726,8 @@ class KienzleModel:
         -------
         Iq_vec : np.ndarray  (A)
         """
-        return self.torque_time_series(phi_ext=phi_ext, add_noise=add_noise) / self.km
+        Mc_vec = self.torque_time_series(phi_ext=phi_ext, add_noise=add_noise)
+        return Mc_vec / self.km + self.I0
 
     # ------------------------------------------------------------------
     # Summary DataFrame
@@ -545,8 +747,8 @@ class KienzleModel:
             ``Mc_clean`` – noiseless Kienzle torque (N·mm)
             ``Mc``       – torque with noise applied (N·mm)
             ``noise``    – noise component alone (N·mm)
-            ``Iq_clean`` – noiseless spindle current (A)
-            ``Iq``       – noisy spindle current (A)
+            ``Iq_clean`` – noiseless spindle current, M_c/k_m + I0 (A)
+            ``Iq``       – noisy spindle current, M_c/k_m + I0 (A)
         """
         phi_vec  = (
             np.asarray(phi_ext, dtype=float)
@@ -563,8 +765,8 @@ class KienzleModel:
                 "Mc_clean": Mc_clean,
                 "Mc":       Mc_noisy,
                 "noise":    Mc_noisy - Mc_clean,
-                "Iq_clean": Mc_clean / self.km,
-                "Iq":       Mc_noisy / self.km,
+                "Iq_clean": Mc_clean / self.km + self.I0,
+                "Iq":       Mc_noisy / self.km + self.I0,
             }
         )
 
@@ -654,11 +856,25 @@ class KienzleModel:
             f"  r_tool                = {self.r_tool} mm",
             f"  kappa                 = {self.kappa_deg}°",
             f"  km                    = {self.km} N·mm/A",
+            f"  I0                    = {self.I0} A  (no-load current offset)",
             f"  time pts              = {len(self._time)} samples",
             "  ── Noise ──────────────────────────────────────",
             f"  white_noise_amplitude = {self.white_noise_amplitude} N·mm  (±A uniform)",
             f"  normal_noise_mean     = {self.normal_noise_mean} N·mm",
-            f"  normal_noise_std      = {self.normal_noise_std} N·mm",
+        ]
+        if self._noise.use_gamma_noise_level:
+            lines += [
+                f"  gamma_shape           = {self.gamma_shape}",
+                f"  gamma_scale           = {self.gamma_scale}",
+                f"  gamma_loc             = {self.gamma_loc}",
+                f"  (normal_noise_std ignored; sigma drawn per run from Gamma)",
+                f"  last_sigma_no_load    = {self.last_sigma_no_load}",
+            ]
+        else:
+            lines += [
+                f"  normal_noise_std      = {self.normal_noise_std} N·mm",
+            ]
+        lines += [
             f"  seed                  = {self.seed}",
             f"  estimated SNR         = {snr_str}",
         ]

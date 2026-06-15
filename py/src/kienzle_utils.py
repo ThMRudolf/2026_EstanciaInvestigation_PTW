@@ -286,3 +286,63 @@ class MillingSignalUtils:
         mask = (time >= t_start) & (time <= t_end)
         no_load_mean = float(np.mean(signal[mask]))
         return signal - no_load_mean, no_load_mean
+
+    # ------------------------------------------------------------------
+    # 7.  convert ae into entry angle
+    # ------------------------------------------------------------------
+    @staticmethod
+    def entry_angle_from_ae(ae: float, D: float, phi_out: float) -> float:
+        """
+        Compute the tool-engagement entry angle phi_in (rad) from the radial
+        depth of cut ae, tool diameter D, and the (known) exit angle phi_out.
+
+        Relation:  phi_out - phi_in = arccos(1 - 2*ae/D)
+
+        Parameters
+        ----------
+        ae : float
+            Radial depth of cut (same units as D, e.g. mm). Must satisfy 0 < ae <= D.
+        D : float
+            Tool diameter (e.g. mm). D = 2 * r_tool.
+        phi_out : float
+            Exit angle (rad).
+
+        Returns
+        -------
+        phi_in : float (rad)
+        """
+        if not (0.0 < ae <= D):
+            raise ValueError("ae must satisfy 0 < ae <= D")
+
+        delta_phi = np.arccos(1.0 - 2.0 * ae / D)
+        phi_in = phi_out - delta_phi
+
+        # Optional: wrap into [0, 2*pi)
+        phi_in = phi_in % (2.0 * np.pi)
+        return phi_in
+
+    # ------------------------------------------------------------------
+    # 8.  radial engagement (immersion) angle from ae
+    # ------------------------------------------------------------------
+    @staticmethod
+    def engagement_angle_from_ae(ae: float, D: float) -> float:
+        """
+        Radial engagement (immersion) angle phi_eng (rad), i.e. the
+        angular width of the cutter-engagement window:
+
+            phi_eng = arccos(1 - 2*ae/D) = phi_out - phi_in
+
+        Parameters
+        ----------
+        ae : float
+            Radial depth of cut (mm).
+        D : float
+            Tool diameter (mm), D = 2 * r_tool.
+
+        Returns
+        -------
+        phi_eng : float (rad), in [0, pi].
+            ae = D (slotting) -> phi_eng = pi.
+        """
+        ratio = np.clip(1.0 - 2.0 * ae / D, -1.0, 1.0)
+        return float(np.arccos(ratio))
