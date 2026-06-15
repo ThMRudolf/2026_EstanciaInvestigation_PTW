@@ -1,0 +1,457 @@
+---
+title: "Methods"
+subtitle: "Physics-Informed Feature Engineering and Hyperparameter Optimisation for an MLP-Based Radial Depth of Cut Estimator"
+author: "Thomas M. Rudolf"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    fig-align: center
+    fig-cap-location: bottom
+  pdf:
+    toc: true
+    number-sections: true
+    geometry: margin=2.5cm
+    fontsize: 11pt
+    fig-pos: H
+execute:
+  echo: false
+  warning: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+# Overview {#sec-overview}
+
+The radial depth of cut ($a_e$) is a process parameter that is not
+directly measurable during flat milling, yet it governs the
+instantaneous chip load and, through the Kienzle cutting-force model,
+the torque-generating current drawn by the spindle motor. This work
+estimates $a_e$ (expressed as the engagement ratio $a_e/D$, where $D$ is
+the tool diameter) from the spindle motor current signal using a
+Multi-Layer Perceptron (MLP) operating on a vector of physics-informed
+features rather than on the raw time-series. The feature vector is
+constructed so that each entry has an explicit interpretation under the
+Kienzle model, which allows the data-driven prediction to be
+cross-checked against the underlying cutting mechanics rather than
+treated as a black-box regression. Two complementary search strategies,
+an exhaustive Grid Search and a Bayesian Tree-structured Parzen
+Estimator (TPE), are applied to the coupled hyperparameter space of
+network depth, layer width, dropout rate, and signal segmentation, and
+their outcomes are compared under identical training conditions. The
+remainder of this section describes the experimental data, the signal
+pre-processing and feature-extraction pipeline, the network architecture
+and training procedure, the two hyperparameter optimisation strategies,
+and the Monte Carlo (MC) Dropout scheme used for uncertainty
+quantification. The physical model underlying the Kienzle-normalised
+features of @sec-features, namely the specific cutting force, the
+cutting torque, and its conversion to the measured spindle current, is
+developed first in @sec-kienzle.
+
+# Kienzle Cutting-Force Model: Formulation and Development {#sec-kienzle}
+
+The Kienzle approach describes the specific cutting force $k_c$, i.e.
+the cutting force per unit chip cross-sectional area, as a power-law
+function of the chip thickness $h$,
+
+$$k_c(h) = k_{c1.1} \cdot h^{-m_c},
+\tag{1}$$
+
+where $k_{c1.1}$ is the specific cutting force at the reference chip
+thickness $h = 1\,\text{mm}$, and $m_c$ is the material-dependent slope
+of the force–thickness relationship on a logarithmic scale. Both
+$k_{c1.1}$ (in $\text{N}/\text{mm}^2$) and $m_c$ (dimensionless) are
+empirical material constants, identified for the workpiece material in
+the companion Bayesian parameter-identification study and used here as
+fixed nominal values $k_{c1.1}^{\text{nom}}$, $m_c^{\text{nom}}$. The
+power-law form in eq. 1 captures the size effect observed in metal
+cutting, whereby the specific cutting force increases as the chip
+thickness decreases, and provides the link between the geometric cutting
+conditions and the resulting force that the remainder of this section
+exploits.
+
+In flat-end milling with $z$ teeth, the chip thickness is not constant
+but varies with the angular position $\varphi_i$ of each tooth $i$ as it
+sweeps through the workpiece. For a feed per tooth $f_z$, the
+instantaneous chip thickness of tooth $i$ is
+
+$$h_i(\varphi_i) = f_z \sin\varphi_i,
+\tag{2}$$
+
+which vanishes at the entry and exit of the cut
+($\varphi_i \in \{0, \pi\}$) and is maximal at $\varphi_i = \pi/2$.
+Combining eq. 1 and eq. 2, and taking the chip width equal to the axial
+depth of cut $a_p$ (for a cutting-edge angle $\kappa = 90^\circ$), the
+tangential cutting force contributed by tooth $i$ is
+
+$$F_{c,i}(\varphi_i) = k_c\big(h_i(\varphi_i)\big) \cdot a_p \cdot h_i(\varphi_i)
+= k_{c1.1} \cdot a_p \cdot f_z^{\,1-m_c} \cdot \big(\sin\varphi_i\big)^{1-m_c}.
+\tag{3}$$
+
+Equation 3 expresses the cutting force on a single tooth entirely in
+terms of the cutting parameters $a_p$, $f_z$, the Kienzle constants
+$k_{c1.1}$, $m_c$, and the instantaneous engagement angle $\varphi_i$,
+and is the form referenced directly by the Kienzle-normalised feature of
+@sec-features.
+
+The angular position of tooth $i$ at time $t$ follows from the spindle
+angular speed $\omega$ and the angular offset of $2\pi/z$ between
+consecutive teeth,
+
+$$\varphi_i(t) = \big(\varphi_0 + \omega t - (i-1)\tfrac{2\pi}{z}\big) \bmod 2\pi,
+\qquad i = 1, \dots, z,
+\tag{4}$$
+
+where $\varphi_0$ is the initial angular offset. A tooth contributes to
+the cutting torque only while it is engaged with the workpiece, i.e.
+while $\varphi_i(t)$ lies within the engagement window
+$[\varphi_{\text{in}}, \varphi_{\text{out}}]$. The width of this window
+is set by the radial depth of cut $a_e$ relative to the tool diameter
+$D$: for a given exit angle $\varphi_{\text{out}}$, the entry angle
+follows from the peripheral-milling engagement geometry as
+
+$$\varphi_{\text{in}} = \varphi_{\text{out}} - \arccos\!\left(1 - \frac{2a_e}{D}\right).
+\tag{5}$$
+
+Equation 5 is the link between the radial engagement ratio $a_e/D$, the
+unobserved quantity of interest in this work, and the fraction of each
+revolution during which the cutting force in eq. 3 is non-zero. A larger
+$a_e/D$ widens the engagement window, increases the number of teeth in
+cut at any instant, and raises the average cutting torque, which is the
+mechanism the Kienzle-normalised and tooth-passing features of
+@sec-features are designed to capture.
+
+Summing the contributions of all engaged teeth and converting from force
+to torque via the tool radius $D/2$ gives the total cutting torque at
+time $t$,
+
+$$M_c(t) = \frac{D}{2} \sum_{i=1}^{z} \mathbb{1}\!\left[\varphi_i(t) \in
+[\varphi_{\text{in}}, \varphi_{\text{out}}]\right] \cdot F_{c,i}\big(\varphi_i(t)\big),
+\tag{6}$$
+
+with $\mathbb{1}[\cdot]$ the indicator function and $\varphi_i(t)$,
+$F_{c,i}$ given by eq. 4 and eq. 3 respectively. $M_c(t)$ is the
+quantity simulated by the `torque_time_series` method of `KienzleModel`
+and is the noise-free physical counterpart of the measured spindle
+signal.
+
+The spindle drive does not output torque directly; it outputs the
+torque-generating current $I_q(t)$, related to $M_c(t)$ through the
+motor torque constant $k_m$ (in $\text{N}\!\cdot\!\text{mm}/\text{A}$),
+with an additive no-load (friction) offset $\bar{I}_{\text{frict}}$
+representing the current drawn to overcome spindle and drivetrain
+friction in the absence of cutting,
+
+$$I_q(t) = \frac{M_c(t)}{k_m} + \bar{I}_{\text{frict}}.
+\tag{7}$$
+
+Equation 7 is implemented in `current_time_series` as $M_c(t)/k_m$, with
+$\bar{I}_{\text{frict}}$ measured separately during a spindle-idle
+window and added back when generating synthetic signals or, conversely,
+subtracted from measured signals during the no-load correction of eq. 8.
+Together, eq. 1 through eq. 7 define the forward map from the cutting
+parameters $(a_p, f_z, D, z, a_e, \omega)$ and the Kienzle constants
+$(k_{c1.1}, m_c)$ to the measured spindle current, and form the physical
+basis against which the data-driven features of @sec-features and the
+Bayesian parameter identification of the companion study are both
+interpreted.
+
+# Experimental Data {#sec-data}
+
+The dataset comprises 64 flat-milling measurement files acquired on a
+Siemens SINUMERIK machine tool and exported in SinuTrace CSV format.
+Each file contains the torque-generating spindle current as a time
+series, sampled at frequency $f_s$, together with the corresponding
+cutting parameters: axial depth of cut $a_p$, feed per tooth $f_z$, tool
+diameter $D$, number of teeth $z$, and spindle speed $n$ (rpm). Cutting
+parameters and per-experiment metadata are stored separately from the
+signal data, in tables denoted `cut_param` and `df_info`, and are joined
+to each measurement by experiment index during dataset construction. The
+nominal Kienzle constants for the workpiece material,
+$k_{c1.1}^{\text{nom}}$ and $m_c^{\text{nom}}$, are taken from the
+materials database used in the companion Bayesian
+parameter-identification study and serve as fixed reference values for
+the physics-informed normalisation described in @sec-features.
+
+# Signal Pre-Processing and Segmentation {#sec-preprocessing}
+
+Before feature extraction, each raw current signal $I(t)$ is corrected
+for the no-load (friction) baseline by subtracting the mean idle current
+$\bar{I}_{\text{frict}}$ measured prior to tool engagement,
+
+$$I_c(t) = I(t) - \bar{I}_{\text{frict}}.
+\tag{8}$$
+
+The initial ramp-up interval, during which the spindle accelerates to
+the commanded speed and the tool has not yet reached steady-state
+engagement, is discarded. The remaining signal is then divided into
+$N_{\text{seg}}$ contiguous, equal-length segments,
+
+$$I_c(t) \;\longrightarrow\; \{I_c^{(1)}, I_c^{(2)}, \dots, I_c^{(N_{\text{seg}})}\},
+\qquad
+|I_c^{(j)}| = \left\lfloor \frac{|I_c|}{N_{\text{seg}}} \right\rfloor,
+\tag{9}$$
+
+each segment inheriting the cutting parameters of its parent
+measurement. Segmentation serves two purposes: it multiplies the number
+of training samples (e.g. $N_{\text{seg}}=4$ expands the dataset from 64
+to 256 samples), and it exposes the model to localised variations in
+engagement within a single pass. $N_{\text{seg}}$ is itself treated as a
+hyperparameter in @sec-hpo, since the optimal segmentation length
+carries a physical interpretation tied to the tooth-engagement phases of
+the milling cycle.
+
+# Physics-Informed Feature Extraction {#sec-features}
+
+For each segment $I_c^{(j)}$, a fixed-length feature vector
+$\mathbf{x} \in
+\mathbb{R}^{d}$ is constructed. The features fall into three groups:
+global statistical descriptors, per-revolution torque-proxy statistics,
+and spectral and Kienzle-normalised descriptors that embed the
+cutting-force model directly into the feature space.
+
+## Statistical Descriptors
+
+The root-mean-square value, peak amplitude, crest factor, mean rectified
+value, and standard deviation of the segment are computed as
+
+$$\text{RMS} = \sqrt{\frac{1}{T}\sum_{t=1}^{T} I_c(t)^2}, \qquad
+\text{peak} = \max_t |I_c(t)|, \qquad
+\text{crest} = \frac{\text{peak}}{\text{RMS} + \varepsilon},
+\tag{10}$$
+
+where $T$ is the segment length in samples and $\varepsilon = 10^{-9}$
+prevents division by zero on a silent signal.
+
+## Per-Revolution Torque Proxy
+
+The segment is partitioned into complete spindle revolutions of length
+$T_{\text{rev}} = \lfloor f_s \cdot 60 / n \rfloor$ samples. For each
+revolution $k$, the mean and maximum current are computed as $\bar{I}_k$
+and $I_{\max,k}$ respectively, giving the revolution-aggregated features
+
+$$\overline{\bar{I}} = \frac{1}{K}\sum_{k=1}^{K} \bar{I}_k, \qquad
+\overline{I_{\max}} = \frac{1}{K}\sum_{k=1}^{K} I_{\max,k}, \qquad
+\sigma_{I_{\max}} = \sqrt{\frac{1}{K-1}\sum_{k=1}^{K}\left(I_{\max,k} -
+\overline{I_{\max}}\right)^2},
+\tag{11}$$
+
+with $K$ the number of complete revolutions in the segment. The
+per-revolution maximum is directly motivated by the Kienzle model, since
+the peak torque per revolution scales with the maximum chip thickness,
+which in turn depends on $a_e$ through the tool entry and exit angles.
+
+## Tooth-Passing Band Energy
+
+The tooth-passing frequency is
+
+$$f_{\text{tooth}} = \frac{n}{60} \cdot z \quad \text{[Hz]},
+\tag{12}$$
+
+and the spectral feature is the fraction of total signal energy
+contained in a $\pm 50\,\text{Hz}$ band around $f_{\text{tooth}}$,
+
+$$E_{\text{tooth}} = \frac{\displaystyle\sum_{f \in [f_{\text{tooth}}-50,\ f_{\text{tooth}}+50]}
+|S(f)|^2}{\displaystyle\sum_{f} |S(f)|^2 + \varepsilon},
+\tag{13}$$
+
+where $S(f) = \big|\widehat{I_c}(f)\big|$ is the magnitude spectrum
+obtained via the real-valued FFT. Normalising by the total spectral
+energy (a Parseval-theorem ratio) renders $E_{\text{tooth}}$ invariant
+to the overall signal amplitude. As $a_e$ increases, more material is
+engaged per tooth pass, the cutting force modulation at
+$f_{\text{tooth}}$ strengthens, and $E_{\text{tooth}}$ increases
+monotonically, providing a physically grounded predictor of the
+regression target.
+
+## Kienzle-Normalised Torque Residual
+
+The per-tooth cutting force derived in @sec-kienzle (eq. 3) is evaluated
+at the nominal Kienzle constants $k_{c1.1}^{\text{nom}}$,
+$m_c^{\text{nom}}$ and the commanded cutting parameters $a_p$, $f_z$,
+$D$ to obtain a reference torque,
+
+$$M_{c,\text{theory}} = \frac{k_{c1.1}^{\text{nom}} \cdot a_p \cdot f_z^{\,1-m_c^{\text{nom}}}
+\cdot D}{2},
+\tag{14}$$
+
+and the measured per-revolution mean torque proxy $\overline{\bar{I}}$
+(eq. 11) is compared against this reference through the normalised
+residual
+
+$$M_{c,\text{norm}} = \frac{\overline{\bar{I}} - M_{c,\text{theory}}}{M_{c,\text{theory}}}.
+\tag{15}$$
+
+$M_{c,\text{norm}}$ quantifies the portion of the measured signal that
+is not explained by the nominal Kienzle prediction at the commanded
+$a_p$ and $f_z$, and is therefore expected to carry the residual
+information attributable to the unknown $a_e$. Invalid combinations of
+$a_p$ or $f_z$ are guarded against before evaluating eq. 14 to avoid
+propagating not-a-number values into the feature matrix.
+
+## Feature Scaling
+
+The complete feature matrix $\mathbf{X} \in \mathbb{R}^{N \times d}$ and
+target vector $\mathbf{y} \in \mathbb{R}^{N}$ are standardised
+independently using
+
+$$\mathbf{x}'_{i} = \frac{\mathbf{x}_i - \mu_{\mathbf{X}}}{\sigma_{\mathbf{X}}}, \qquad
+y'_{i} = \frac{y_i - \mu_{\mathbf{y}}}{\sigma_{\mathbf{y}}},
+\tag{16}$$
+
+with $\mu$ and $\sigma$ estimated on the training split only.
+Constant-valued columns (e.g. $D$ and $z$ when fixed across all
+experiments) are removed prior to scaling via a variance-threshold
+filter, since a zero-variance column produces a division by zero under
+eq. 16 and propagates not-a-number values to every sample.
+
+# Model Architecture {#sec-model}
+
+The regressor, denoted `AeEstimatorMLP`, is a feed-forward network with
+$L$ hidden layers. For input $\mathbf{x}' \in \mathbb{R}^d$, each hidden
+layer applies
+
+$$\mathbf{h}^{(l)} = \text{Dropout}_p\Big(\sigma\big(W^{(l)} \mathbf{h}^{(l-1)} +
+\mathbf{b}^{(l)}\big)\Big), \qquad l = 1, \dots, L,
+\tag{17}$$
+
+with $\mathbf{h}^{(0)} = \mathbf{x}'$, $\sigma(\cdot)$ a ReLU
+activation, and a uniform dropout rate $p$ applied after every hidden
+layer. The output layer is a single linear unit,
+$\hat{y}' = W^{(L+1)}\mathbf{h}^{(L)} + b^{(L+1)}$, producing the
+standardised prediction of $a_e/D$. Both the number of layers $L$ and
+the per-layer widths $(u_1, \dots, u_L)$ are treated as hyperparameters,
+allowing depth and width to vary jointly with the dropout rate $p$.
+
+# Training Procedure {#sec-training}
+
+The network is trained by minimising the Huber loss between the
+predicted and measured standardised targets,
+
+$$\mathcal{L}_{\text{Huber}}(y', \hat{y}') =
+\begin{cases}
+\dfrac{1}{2}(y' - \hat{y}')^2, & |y' - \hat{y}'| \le \delta, \\[6pt]
+\delta\left(|y' - \hat{y}'| - \dfrac{1}{2}\delta\right), & |y' - \hat{y}'| > \delta,
+\end{cases}
+\tag{18}$$
+
+with $\delta = 1.0$. The Huber loss combines the quadratic behaviour of
+mean-squared error for small residuals with the linear behaviour of
+mean-absolute error for large residuals, limiting the influence of
+outlier segments without discarding them. The network is optimised with
+Adam, a batch size of 16, and a fixed budget of 300 training epochs for
+all final model evaluations.
+
+# Hyperparameter Optimisation {#sec-hpo}
+
+The hyperparameters $(L, u_1,\dots,u_L, p, N_{\text{seg}})$ jointly
+determine model capacity, regularisation strength, and the granularity
+of the temporal segmentation described in @sec-preprocessing. Because
+these factors interact, an exhaustive Grid Search and a Bayesian TPE
+search are run over the same bounded space and compared under identical
+training conditions.
+
+## Search Space
+
+The shared search space is defined once, over the number of hidden
+layers $L \in
+\{1,2,3\}$, a per-layer width drawn from $\{32, 64, 128\}$, a dropout
+rate $p \in
+\{0.0, 0.1, 0.2, 0.3\}$, and $N_{\text{seg}} \in \{1,2,4,8\}$. One
+asymmetry is maintained deliberately between the two strategies: the
+Grid Search applies a single uniform width across all $L$ layers,
+whereas the TPE sampler searches each layer width independently, since a
+uniform-width grid keeps the cardinality of the exhaustive search
+tractable while the TPE surrogate can exploit the larger, per-layer
+search space without an explosion in trial count.
+
+## Grid Search
+
+The Grid Search evaluates every element of the Cartesian product of the
+discretised hyperparameter sets,
+
+$$|\Theta_{\text{grid}}| = |L| \times |u| \times |p| \times |N_{\text{seg}}|,
+\tag{19}$$
+
+which for the bounds above yields $3 \times 3 \times 4 \times 4 = 144$
+candidate configurations in the default setting. Each configuration is
+trained and evaluated on a validation split, and the configuration
+minimising $\mathcal{L}_{\text{Huber}}$ on the validation set is
+retained. Because eq. 19 grows multiplicatively in the number of
+hyperparameters, the Grid Search provides an exhaustive but
+computationally expensive reference against which the Bayesian strategy
+is benchmarked.
+
+## Bayesian Tree-Structured Parzen Estimator
+
+The TPE sampler, implemented via Optuna, models the hyperparameter space
+probabilistically rather than exhaustively. At each trial $t$, the set
+of previously evaluated configurations is partitioned into "good" and
+"bad" subsets according to a quantile $\gamma$ of the observed
+validation losses, and two kernel-density estimates are fitted,
+
+$$\ell(\theta) = p(\theta \mid \mathcal{L}_{\text{Huber}} < \tau), \qquad
+g(\theta) = p(\theta \mid \mathcal{L}_{\text{Huber}} \ge \tau),
+\tag{20}$$
+
+where $\tau$ is the loss quantile threshold. The next configuration is
+drawn to maximise the ratio $\ell(\theta)/g(\theta)$, which is
+proportional to the expected improvement over $\tau$. The sampler is
+configured with `multivariate=True`, so that $\ell$ and $g$ are fitted
+over the joint distribution of all hyperparameters rather than
+independently per dimension, which is essential for capturing the
+coupling between layer width, depth, and dropout rate. A
+`HyperbandPruner` terminates clearly underperforming trials before
+completing the full 300-epoch training budget, reducing the wall-clock
+cost per trial substantially below that of a complete training run. In
+the reported comparison, the Grid Search evaluated 216 configurations
+while the TPE sampler reached a comparable or better validation loss
+within 80 trials, reflecting the sample efficiency gained from eq. 20
+over exhaustive enumeration.
+
+# Uncertainty Quantification via MC Dropout {#sec-mcdropout}
+
+Predictive uncertainty is estimated using Monte Carlo (MC) Dropout. At
+inference time, dropout (eq. 17) is kept active, and $T$ stochastic
+forward passes are performed for a given input $\mathbf{x}'$, yielding
+predictions $\{\hat{y}'_1, \dots, \hat{y}'_T\}$. The predictive mean and
+variance are
+
+$$\hat{\mu}(\mathbf{x}') = \frac{1}{T}\sum_{t=1}^{T}\hat{y}'_t, \qquad
+\hat{\sigma}^2(\mathbf{x}') = \frac{1}{T-1}\sum_{t=1}^{T}\left(\hat{y}'_t -
+\hat{\mu}(\mathbf{x}')\right)^2.
+\tag{21}$$
+
+$\hat{\sigma}^2(\mathbf{x}')$ approximates the epistemic uncertainty of
+the model at $\mathbf{x}'$ and is reported alongside
+$\hat{\mu}(\mathbf{x}')$ for both the Grid Search and TPE best
+configurations, allowing the two optimisation strategies to be compared
+not only on point-prediction accuracy but also on the sharpness of their
+predictive distributions.
+
+# Workflow Summary {#sec-workflow}
+
+The complete data pipeline proceeds from raw acquisition to model
+selection in six stages: (1) loading of the 64 SinuTrace measurement
+files together with their cutting parameters from `cut_param` and
+`df_info`; (2) friction-baseline correction, ramp-up removal, and
+segmentation into $N_{\text{seg}}$ parts per eq. 8–9; (3) extraction of
+the physics-informed feature vector per eq. 10–15, combining
+statistical, per-revolution, spectral, and Kienzle-normalised
+descriptors; (4) standardisation of features and targets per eq. 16,
+with zero-variance columns removed beforehand; (5) joint optimisation of
+network architecture, dropout, and segmentation via Grid Search (eq. 19)
+and Bayesian TPE (eq. 20) under the shared training procedure of eq. 18;
+and (6) final retraining of both selected configurations at the full
+300-epoch budget, followed by MC Dropout evaluation (eq. 21) for
+predictive accuracy and uncertainty comparison. All physics-related
+computations, namely the Kienzle force evaluation and the
+signal-processing utilities used in stages 2 and 3, are delegated to the
+shared `KienzleModel` and `MillingSignalUtils` classes used throughout
+the companion Bayesian parameter-identification study, ensuring that the
+physical model underlying both research threads remains a single,
+consistently maintained implementation.
