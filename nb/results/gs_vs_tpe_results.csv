@@ -1,3 +1,0 @@
-method,hidden,dropout,n_segments,MAE,RMSE,R2,mean_uncertainty,trials,time_s,best_val_loss
-Grid Search,"[64, 64, 64]",0.15,2,0.3382,0.4408,0.9923,0.0243,216,1094.2,0.023452
-Bayesian TPE,"[128, 128, 64]",0.056,2,0.2102,0.26,0.9973,0.015,80,237.9,0.019499
