@@ -5,7 +5,7 @@ Kienzle cutting-force / torque model for flat-end milling operations.
 
 Implements the per-tooth cutting-force formula
 
-    F_{c,i} = k_{c1.1} · a_p · f_z^{1−m_c} · sin(κ)^{m_c} · sin(φ_eff,i)^{1−m_c}
+    F_{c,i} = k_{c1.1} · a_p · f_z^{−m_c} · sin(κ)^{−m_c} · sin(φ_eff,i)^{1−m_c}
 
 and the resulting spindle torque
 
@@ -70,8 +70,8 @@ Usage
         time                = np.linspace(0, 0.5, 5000),
         z                   = 4,
         r_tool              = 10.0,         # mm
-        kappa_deg           = 90.0,
-        km                  = 1.3,
+        kappa_deg           = 90.0, 
+        km                  = 1.3,          # [Nm / A]
         I0                  = 1.8,           # A  — no-load current offset
         white_noise_amplitude = 30.0,       # N·mm  — uniform white noise ±30
         normal_noise_mean   = 5.0,          # N·mm  — systematic offset
@@ -372,7 +372,7 @@ class KienzleModel:
     kappa_deg : float, optional
         Tool cutting-edge angle κ (degrees).  Default 90°.
     km : float, optional
-        Motor torque constant k_m (N·mm / A).  Default 1.3.
+        Motor torque constant k_m (N·mm / A).  Default 1300.
     I0 : float, optional
         No-load spindle current offset (A), added to the
         torque-derived current:  I(t) = M_c(t) / k_m + I0.
@@ -422,7 +422,7 @@ class KienzleModel:
     # ── optional process parameters ───────────────────────────────────
     r_tool: float = 10.0
     kappa_deg: float = 90.0
-    km: float = 1.3
+    km: float = 1300
     I0: float = 0.0
     phi0_deg: float = 0.0
 
@@ -550,8 +550,8 @@ class KienzleModel:
                 Fci[i] = (
                     self.kc11
                     * self.ap
-                    * self.fz ** (1.0 - self.mc)
-                    * np.sin(self._kappa_rad) ** self.mc
+                    * self.fz ** (- self.mc)
+                    * np.sin(self._kappa_rad) ** (-self.mc)
                     * np.sin(phi_eff) ** (1.0 - self.mc)
                 )
         return Fci
@@ -568,10 +568,11 @@ class KienzleModel:
         dict : keys ``Fci``, ``Mc``, ``phi_eff_deg``
         """
         Fci = self._Fci_at_phi(phi_spindle)
-        Mc  = float(np.sum(Fci) * self.r_tool)
+        Mc  = float(np.sum(Fci) * self.r_tool) / 1000.0
         phi_eff_deg = np.degrees(
             (phi_spindle + self._tooth_offsets_rad) % (2.0 * np.pi)
         )
+        # Units: Fci [N], Mc [N·m], phi [°]
         return {"Fci": Fci, "Mc": Mc, "phi_eff_deg": phi_eff_deg}
 
     # ------------------------------------------------------------------
@@ -586,6 +587,40 @@ class KienzleModel:
     # ------------------------------------------------------------------
     # Time-series: with optional noise
     # ------------------------------------------------------------------
+    def _torque_time_series_mm(
+        self,
+        phi_ext: Optional[np.ndarray] = None,
+        add_noise: bool = True,
+    ) -> np.ndarray:
+        """
+        Spindle torque over the full time vector, in N·mm (internal).
+
+        Used by methods that need the torque in the natural Kienzle
+        unit (consistent with *kc11* in N/mm² and *r_tool*/*fz*/*ap* in
+        mm), e.g. the current calculation (km in N·mm/A) and the Stan
+        data export.  See :meth:`torque_time_series` for the public,
+        N·m-valued equivalent.
+        """
+        N = len(self._time)
+
+        if phi_ext is not None:
+            phi_vec = np.asarray(phi_ext, dtype=float)
+            if len(phi_vec) != N:
+                raise ValueError(
+                    f"phi_ext length ({len(phi_vec)}) must match "
+                    f"time length ({N})."
+                )
+        else:
+            phi0_rad = self.phi0_deg * np.pi / 180.0
+            phi_vec  = (phi0_rad + self._omega_rad * self._time) % (2.0 * np.pi)
+
+        Mc_vec = self._torque_clean(phi_vec)
+
+        if add_noise and self._noise.is_active:
+            Mc_vec = Mc_vec + self._noise.sample(N)
+
+        return Mc_vec
+
     def torque_time_series(
         self,
         phi_ext: Optional[np.ndarray] = None,
@@ -607,27 +642,9 @@ class KienzleModel:
 
         Returns
         -------
-        Mc_vec : np.ndarray  (N·mm)
+        Mc_vec : np.ndarray  (N·m)
         """
-        N = len(self._time)
-
-        if phi_ext is not None:
-            phi_vec = np.asarray(phi_ext, dtype=float)
-            if len(phi_vec) != N:
-                raise ValueError(
-                    f"phi_ext length ({len(phi_vec)}) must match "
-                    f"time length ({N})."
-                )
-        else:
-            phi0_rad = self.phi0_deg * np.pi / 180.0
-            phi_vec  = (phi0_rad + self._omega_rad * self._time) % (2.0 * np.pi)
-
-        Mc_vec = self._torque_clean(phi_vec)
-
-        if add_noise and self._noise.is_active:
-            Mc_vec = Mc_vec + self._noise.sample(N)
-
-        return Mc_vec
+        return self._torque_time_series_mm(phi_ext=phi_ext, add_noise=add_noise) / 1000.0
 
     # ------------------------------------------------------------------
     # Last drawn Gamma noise-level sigma (diagnostic)
@@ -665,7 +682,7 @@ class KienzleModel:
         """
         if N is None:
             N = len(self._time)
-        return self._noise.sample(N)
+        return self._noise.sample(N)*self.km/1000 # noise values are based on current signals.
 
     # ------------------------------------------------------------------
     # SNR helper
@@ -687,8 +704,8 @@ class KienzleModel:
         -------
         snr : float  (dB).  Returns ``inf`` when noise is disabled.
         """
-        Mc_clean = self.torque_time_series(phi_ext=phi_ext, add_noise=False)
-        return self._noise.snr_db(float(np.std(Mc_clean)))
+        Mc_clean_mm = self._torque_time_series_mm(phi_ext=phi_ext, add_noise=False)
+        return self._noise.snr_db(float(np.std(Mc_clean_mm)))
 
     # ------------------------------------------------------------------
     # Angular position from time
@@ -720,14 +737,14 @@ class KienzleModel:
         phi_ext : array-like, optional
             External angular-position vector.
         add_noise : bool
-            Forwarded to :meth:`torque_time_series`.
+            Forwarded to the internal torque computation.
 
         Returns
         -------
         Iq_vec : np.ndarray  (A)
         """
-        Mc_vec = self.torque_time_series(phi_ext=phi_ext, add_noise=add_noise)
-        return Mc_vec / self.km + self.I0
+        Mc_vec_mm = self._torque_time_series_mm(phi_ext=phi_ext, add_noise=add_noise)
+        return Mc_vec_mm / (self.km) + self.I0 # km in [N·mm/A], Mc in [N·mm]
 
     # ------------------------------------------------------------------
     # Summary DataFrame
@@ -744,9 +761,9 @@ class KienzleModel:
         pd.DataFrame with columns:
             ``time``     – seconds
             ``phi``      – spindle angle (rad)
-            ``Mc_clean`` – noiseless Kienzle torque (N·mm)
-            ``Mc``       – torque with noise applied (N·mm)
-            ``noise``    – noise component alone (N·mm)
+            ``Mc_clean`` – noiseless Kienzle torque (N·m)
+            ``Mc``       – torque with noise applied (N·m)
+            ``noise``    – noise component alone (N·m)
             ``Iq_clean`` – noiseless spindle current, M_c/k_m + I0 (A)
             ``Iq``       – noisy spindle current, M_c/k_m + I0 (A)
         """
@@ -755,18 +772,18 @@ class KienzleModel:
             if phi_ext is not None
             else self.phi_time_series()
         )
-        Mc_clean = self.torque_time_series(phi_ext=phi_ext, add_noise=False)
-        Mc_noisy = self.torque_time_series(phi_ext=phi_ext, add_noise=True)
+        Mc_clean_mm = self._torque_time_series_mm(phi_ext=phi_ext, add_noise=False)
+        Mc_noisy_mm = self._torque_time_series_mm(phi_ext=phi_ext, add_noise=True)
 
         return pd.DataFrame(
             {
                 "time":     self._time,
                 "phi":      phi_vec,
-                "Mc_clean": Mc_clean,
-                "Mc":       Mc_noisy,
-                "noise":    Mc_noisy - Mc_clean,
-                "Iq_clean": Mc_clean / self.km + self.I0,
-                "Iq":       Mc_noisy / self.km + self.I0,
+                "Mc_clean": Mc_clean_mm / 1000.0,
+                "Mc":       Mc_noisy_mm / 1000.0,
+                "noise":    (Mc_noisy_mm - Mc_clean_mm) / 1000.0,
+                "Iq_clean": Mc_clean_mm / self.km + self.I0,
+                "Iq":       Mc_noisy_mm / self.km + self.I0,
             }
         )
 
@@ -813,7 +830,7 @@ class KienzleModel:
 
         if Mc_observed is None:
             phi_obs = self.phi_time_series()
-            Mc_obs  = self.torque_time_series(add_noise=True)
+            Mc_obs  = self._torque_time_series_mm(add_noise=True)
         else:
             Mc_obs  = np.asarray(Mc_observed, dtype=float)
             phi_obs = (

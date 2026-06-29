@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from kienzle_model import KienzleModel
+from src.kienzle_model import KienzleModel
 
 # -------------------------------------------------------------------
 # Build a model with Gamma-distributed noise level (from the fit to
@@ -44,7 +44,7 @@ plt.ylabel("Iq (A)")
 plt.title(f"Spindle current with Gamma noise (σ_run = {model.last_sigma_no_load:.4f})")
 plt.legend()
 plt.tight_layout()
-plt.savefig("gamma_noise_example.png", dpi=150)
+plt.savefig("results/gamma_noise_example.png", dpi=150)
 print("Saved plot to gamma_noise_example.png")
 
 # -------------------------------------------------------------------

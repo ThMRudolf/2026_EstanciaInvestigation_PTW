@@ -1,0 +1,84 @@
+N1000 ; Programm Nuten
+N1010 ; Fräsversuche Standzeit HERMR C32 U
+N1020 ; erstellt 16.06.2026 rdf (Rudolf)
+
+
+N1010 DEF INT IDX_LIST_OR=1
+N1015 DEFINE LEN_LIST_OR AS 4
+N1020 DEF REAL LIST_OR[LEN_LIST_OR]=(0.5,0.75,1,1.1)
+N1010 DEF INT IDX 
+N1010 DEF INT IDX_LIST_AE=1
+N1015 DEFINE LEN_LIST_AE AS 4
+N1020 DEF REAL LIST_AE[LEN_LIST_AE]=(1,0.95,0.80,0.65)
+
+N1025 G90 G17
+N1040 ;Parametrierung
+N1050 R100=3232     ;spindle speed
+N1060 R101=278     ;feed
+N1070 R102=10      ;diameter 10
+N1080 R103=2        ;number of inserts
+N1090 R104=6.20      ;axial depth ap
+N1100 R105=145      ;work piece length X
+N1100 R106=90      ;slot length in Y
+WORKPIECE(,"",,"BOX",0,0,-25,-80,-145,0,150,-90)
+N1020 R109=1.0*R105    ;max value in x
+N1110 ;--------------------
+
+
+N1120 ;Bahnvorschub
+N1130 R107=-R102/2     	; Startpunkt X
+;N1140 R108=R108+R104   ; Ebene Z
+
+;NCG#data#kessler_data.com#DATA#*NCG;*RO*;*HD*
+;#"PTW"#"Technische Universität Darmstadt"#0#0#10#2#2#1#"A"#1#9#2#3#1#"26"#S26#*NCG;*RO*;*HD*
+KESSLER_DATA(101,10,26,26,1,1,1,"PTW 000.000.010 2626 1 A")
+;#END#*NCG;*RO*;*HD*
+
+N1150 G513              ; zero point offset G513
+N115 T="RDF_SF_L120_LS30_R5_HM_P"
+M06
+
+CYCLE800(1,"HERMLE",100000,57,0,0,0,0,0,0,0,0,0,-1,100,1)
+
+WORKPIECE(,"",,"BOX",0,0,-25,-80,-145,0,145,-90)
+N1160 S=R100 M03
+N1170 LOOP_AE:
+N1173 M00
+N1175 S=R100 M3
+N1175 FOR IDX =0 TO LEN_LIST_AE-1
+	MSG(" AE: "<<IDX_LIST_AE<<" - "<<IDX+1)
+N1180 R107=R107+LIST_AE[IDX]*R102      ;Position X
+MSG("R107: "<<R107)
+N1190 G00 X=-R107 Y=5+(R102/2) ;F=R101;Z1O
+;N1260 WAITFORTRACE
+;NCG#envelop#kessler_envelop.com#ENVELOP#*NCG;*RO*;*HD*
+;#1#1#1#1#1#1#1#90#90#3#"Bei aktiver Referenz wird jede Messung "#"Ab hier wird jede Messung als Referenz-"#"als Referenzmessung im System abgelgt."#"messung im System abgelegt um die"#"Bei neuen Bearbeitungsprozessen mussen erst"#"spaeteren Prozessmessungen mit der "#"die Referenzmessungen durchgefuehrt werden"#"Referenz zu vergleichen"#2#2#1#1#1#*NCG;*RO*;*HD*
+KESSLER_ENVELOP(1,1,1,1,1,1,90,90,0)
+;#END#*NCG;*RO*;*HD*
+N1200 G00 Z=0-R104; F=R101
+N1210 STOPRE
+N1220 R14=1 
+N1230 G01 Y=-R106-5-(R102/2) F=R101
+N1240 STOPRE
+N1250 R14=0
+N1255 Z10 
+;N1260 WAITFORTRACE
+;NCG#envelop#kessler_envelop.com#ENVELOP#*NCG;*RO*;*HD*
+;#1#1#2#2#1#1#2#90#90#4#"Beim aktiven Datenexport werden die"#"Die Einstellungen für die Daten-"#"Prozessdaten permanent (d.h. unabhängig"#"export werden von Einstellungen des"#"von aktiven Messungen) im System gespeichert"#"vorher deklarierten/aufgerufenen"#" "#"Huellkurven-Zyklus übernommen"#2#2#1#1#1#*NCG;*RO*;*HD*
+KESSLER_ENVELOP(1,0,-1,-1,1,1,-1,-1,-1)
+;#END#*NCG;*RO*;*HD*
+;M00
+;N1255 Z10 
+N1255 ENDFOR
+N1270 G00 Z10
+N1275 R107=R107+R102/2
+;M00
+STOPRE
+N1280 IF R109>R107+20 GOTOB LOOP_AE
+;N1290 M00
+;N1300 ENDFOR
+N1310 G00 Z20 M5
+N131 M00
+N1320 X0Y0
+
+N1300 M30
