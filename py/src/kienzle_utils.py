@@ -16,6 +16,8 @@ Usage
     smoothed        = MSU.maf(signal, n=14)
     df_max          = MSU.max_Mc(id_reduce, Mc, phi)
     alpha, beta     = MSU.beta_dist_param(mean=0.25, var=0.02**2)
+    phi_meas        = MSU.phi_from_encoder(encoder_deg, mach_time_s, force_time_s)
+    Mc_meas         = MSU.spindle_torque(force_0, force_1, phi_meas, r_tool)
 """
 
 import numpy as np
@@ -346,3 +348,109 @@ class MillingSignalUtils:
         """
         ratio = np.clip(1.0 - 2.0 * ae / D, -1.0, 1.0)
         return float(np.arccos(ratio))
+
+    # ------------------------------------------------------------------
+    # 9.  Measured spindle angle from the machine-channel encoder
+    # ------------------------------------------------------------------
+    @staticmethod
+    def phi_from_encoder(
+        encoder_deg: np.ndarray,
+        sample_time_s: np.ndarray,
+        target_time_s: np.ndarray,
+        phi0_offset_deg: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Resample the spindle's absolute encoder angle (e.g. the CNC
+        controller's ``axis0_positionact``, logged at the machine-channel
+        rate, hardware-wrapped to [0, 360) degrees) onto another time
+        vector (typically a force channel logged at a much higher rate),
+        returning the spindle angular position phi in radians.
+
+        Unlike :meth:`lim_2pi`, this does not integrate a speed signal:
+        the encoder angle is unwrapped with ``np.unwrap`` (vectorized,
+        handles the periodic wrap directly) and then linearly
+        interpolated onto *target_time_s*, which is far cheaper than
+        ``lim_2pi``'s per-revolution rescan for long, high-rate recordings.
+
+        Parameters
+        ----------
+        encoder_deg : array-like
+            Wrapped absolute spindle angle in degrees, at *sample_time_s*.
+        sample_time_s : array-like
+            Timestamps of *encoder_deg*, in seconds (monotonically
+            increasing).
+        target_time_s : array-like
+            Timestamps to resample onto (e.g. the force channel's sample
+            times), in seconds.
+        phi0_offset_deg : float, default 0.0
+            Constant phase offset (degrees) between the encoder zero and
+            whatever reference angle the caller needs (e.g. a sensor
+            mounting offset). Not yet calibrated for the current setup.
+
+        Returns
+        -------
+        phi : np.ndarray
+            Spindle angular position in radians, wrapped to [0, 2*pi),
+            same length as *target_time_s*.
+        """
+        unwrapped_deg = np.unwrap(np.asarray(encoder_deg, dtype=float), period=360.0)
+        interp_deg = np.interp(
+            np.asarray(target_time_s, dtype=float),
+            np.asarray(sample_time_s, dtype=float),
+            unwrapped_deg,
+        )
+        phi = np.deg2rad(interp_deg + phi0_offset_deg)
+        return np.mod(phi, 2.0 * np.pi)
+
+    # ------------------------------------------------------------------
+    # 10.  Spindle torque from measured Fx/Fy and spindle angle
+    # ------------------------------------------------------------------
+    @staticmethod
+    def spindle_torque(
+        force_x: np.ndarray,
+        force_y: np.ndarray,
+        phi: np.ndarray,
+        r_tool: float,
+        phi0_offset: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Cutting torque about the spindle axis from the two in-plane
+        force components (e.g. ``force_0``/``force_1``) measured in the
+        fixed dynamometer/workpiece frame, projected onto the tangential
+        (torque-producing) direction at spindle angle *phi*.
+
+            Ft(phi) = -Fx*sin(phi + phi0_offset) + Fy*cos(phi + phi0_offset)
+            Mc(phi) = r_tool * Ft(phi)
+
+        *phi0_offset* accounts for an unknown/uncalibrated phase
+        difference between the encoder's zero and the force sensor's X
+        axis; default 0.0 until calibrated (e.g. against the known
+        tool-engagement window from the NC log via :meth:`max_Mc`).
+
+        Parameters
+        ----------
+        force_x, force_y : array-like
+            Fx/Fy force components (same units and length as *phi*; note
+            raw ``force_0``/``force_1`` are ADC counts, not newtons, so a
+            counts-to-newtons calibration must be applied by the caller
+            first if physical units are required).
+        phi : array-like
+            Spindle angular position in radians, e.g. from
+            :meth:`phi_from_encoder`.
+        r_tool : float
+            Tool radius (mm) — read from the machine channel's
+            ``toolradius`` field for the true value rather than assumed.
+        phi0_offset : float, default 0.0
+            Phase offset (radians) applied to *phi* before projection.
+
+        Returns
+        -------
+        Mc : np.ndarray
+            Cutting torque time series, same length as *phi* (N·mm if
+            forces are in N and r_tool in mm).
+        """
+        force_x = np.asarray(force_x, dtype=float)
+        force_y = np.asarray(force_y, dtype=float)
+        phi = np.asarray(phi, dtype=float)
+        ft = -force_x * np.sin(phi + phi0_offset) + force_y * np.cos(phi + phi0_offset)
+        return r_tool * ft
