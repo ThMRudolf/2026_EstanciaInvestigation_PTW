@@ -403,6 +403,84 @@ class MillingSignalUtils:
         return np.mod(phi, 2.0 * np.pi)
 
     # ------------------------------------------------------------------
+    # 9b.  Angle interpolation onto an arbitrary N-sample grid (upsampling)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def phi_from_encoder_deg(
+        encoder_deg: np.ndarray,
+        sample_time_s: np.ndarray,
+        target_time_s: np.ndarray,
+        phi0_offset_deg: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Convenience wrapper around :meth:`phi_from_encoder` that returns the
+        wrapped spindle angle in DEGREES [0, 360) instead of radians. Used
+        to upsample the spindle-position channel (``axis0_positionact``,
+        250 Hz, hardware-wrapped to [0, 360)) onto a higher-rate target grid
+        (e.g. a fixed-size ``n_angle_samples`` grid per cut).
+        """
+        phi_rad = MillingSignalUtils.phi_from_encoder(
+            encoder_deg, sample_time_s, target_time_s, np.deg2rad(phi0_offset_deg)
+        )
+        return np.rad2deg(phi_rad) % 360.0
+
+    # ------------------------------------------------------------------
+    # 9c.  Fixed-size resampling helpers (up/down-sampling to N samples)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def resample_linear_to_n(
+        signal: np.ndarray,
+        time_s: np.ndarray,
+        n_target: int,
+        t_start: Optional[float] = None,
+        t_end: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Resample *signal* (any sample rate) onto a uniform grid of exactly
+        *n_target* samples spanning [t_start, t_end] via linear
+        interpolation (``np.interp``). Works for both up- and down-sampling
+        (e.g. 20 kHz force -> n_force_samples, or 250 Hz axis position ->
+        n_angle_samples for non-angular signals).
+        """
+        signal = np.asarray(signal, dtype=float)
+        time_s = np.asarray(time_s, dtype=float)
+        if t_start is None:
+            t_start = float(time_s[0])
+        if t_end is None:
+            t_end = float(time_s[-1])
+        t_grid = np.linspace(t_start, t_end, int(n_target))
+        resampled = np.interp(t_grid, time_s, signal)
+        return t_grid, resampled
+
+    # ------------------------------------------------------------------
+    # 9d.  ADC counts -> physical voltage
+    # ------------------------------------------------------------------
+    @staticmethod
+    def adc_counts_to_voltage(
+        raw_counts: np.ndarray,
+        bits: int = 16,
+        v_range: float = 10.0,
+        bipolar: bool = True,
+    ) -> np.ndarray:
+        """
+        Convert raw ADC integer counts to physical voltage. Kept as its own
+        function so bit depth / voltage range can be changed in one place
+        (default: 16-bit ADC, +/-10 V bipolar input, typical Kistler
+        charge-amplifier / DAQ front end).
+
+        Bipolar:  voltage = raw_counts / 2**(bits-1) * v_range
+        Unipolar: voltage = raw_counts / (2**bits - 1) * v_range
+        """
+        raw_counts = np.asarray(raw_counts, dtype=float)
+        if bipolar:
+            full_scale = 2 ** (bits - 1)
+            voltage = raw_counts / full_scale * v_range
+        else:
+            full_scale = 2**bits - 1
+            voltage = raw_counts / full_scale * v_range
+        return voltage
+
+    # ------------------------------------------------------------------
     # 10.  Spindle torque from measured Fx/Fy and spindle angle
     # ------------------------------------------------------------------
     @staticmethod
@@ -454,3 +532,109 @@ class MillingSignalUtils:
         phi = np.asarray(phi, dtype=float)
         ft = -force_x * np.sin(phi + phi0_offset) + force_y * np.cos(phi + phi0_offset)
         return r_tool * ft
+
+    # ------------------------------------------------------------------
+    # 11.  Radial force at the cutting edge from measured Fx/Fy and phi
+    # ------------------------------------------------------------------
+    @staticmethod
+    def radial_force(
+        force_x: np.ndarray,
+        force_y: np.ndarray,
+        phi: np.ndarray,
+        phi0_offset: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Radial (centre-outward) force component at the cutting edge,
+        obtained by projecting the two in-plane dynamometer force
+        components onto the radial direction defined by the spindle angle
+        *phi*. Complementary to :meth:`spindle_torque`, which projects onto
+        the tangential direction.
+
+            Fr(phi) = Fx*cos(phi + phi0_offset) + Fy*sin(phi + phi0_offset)
+
+        Parameters
+        ----------
+        force_x, force_y : array-like
+            Fx/Fy force components (physical units, e.g. N after ADC +
+            sensitivity calibration; same length as *phi*).
+        phi : array-like
+            Spindle angular position in radians, e.g. from
+            :meth:`phi_from_encoder` (or degrees converted with
+            ``np.deg2rad`` beforehand).
+        phi0_offset : float, default 0.0
+            Phase offset (radians) applied to *phi* before projection.
+
+        Returns
+        -------
+        Fr : np.ndarray
+            Radial force time series, same length as *phi*.
+        """
+        force_x = np.asarray(force_x, dtype=float)
+        force_y = np.asarray(force_y, dtype=float)
+        phi = np.asarray(phi, dtype=float)
+        return force_x * np.cos(phi + phi0_offset) + force_y * np.sin(phi + phi0_offset)
+
+    # ------------------------------------------------------------------
+    # 12.  Sum of radial force per angular bin (across all revolutions)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def sum_radial_force_by_angle(
+        Fr: np.ndarray,
+        phi: np.ndarray,
+        n_bins: int = 360,
+        degrees: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Bin the radial force time series *Fr* by spindle angle *phi* and
+        sum the contributions in each bin, across however many spindle
+        revolutions the input covers. This is the radial-force analogue of
+        :meth:`max_Mc` (which takes the per-revolution MAX of torque); here
+        the aggregation is a SUM over all samples/revolutions falling into
+        each of the *n_bins* angular bins spanning [0, 360) / [0, 2*pi).
+
+        Used to build the aE-relevant radial-force-vs-angle profile per cut
+        (tool-engagement window becomes visible as the angular range with
+        non-negligible summed radial force).
+
+        Parameters
+        ----------
+        Fr : array-like
+            Radial force samples (output of :meth:`radial_force`).
+        phi : array-like
+            Spindle angular position, same length as *Fr*. In degrees if
+            *degrees* is True (default), else radians.
+        n_bins : int, default 360
+            Number of angular bins across one full revolution.
+        degrees : bool, default True
+            Whether *phi* is given in degrees (True) or radians (False).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``angle_deg`` (bin centre, degrees), ``Fr_sum``
+            (summed radial force in the bin), ``Fr_mean`` (mean radial
+            force in the bin, i.e. ``Fr_sum / count``), and ``count``
+            (number of samples that fell into the bin).
+        """
+        Fr = np.asarray(Fr, dtype=float)
+        phi = np.asarray(phi, dtype=float)
+        phi_deg = phi if degrees else np.rad2deg(phi)
+        phi_deg = np.mod(phi_deg, 360.0)
+
+        bin_edges = np.linspace(0.0, 360.0, n_bins + 1)
+        bin_idx = np.clip(np.digitize(phi_deg, bin_edges) - 1, 0, n_bins - 1)
+
+        Fr_sum = np.bincount(bin_idx, weights=Fr, minlength=n_bins)
+        counts = np.bincount(bin_idx, minlength=n_bins)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            Fr_mean = np.where(counts > 0, Fr_sum / counts, 0.0)
+
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        return pd.DataFrame(
+            {
+                "angle_deg": bin_centers,
+                "Fr_sum": Fr_sum,
+                "Fr_mean": Fr_mean,
+                "count": counts,
+            }
+        )
