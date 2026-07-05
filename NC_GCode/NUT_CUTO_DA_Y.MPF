@@ -1,5 +1,5 @@
 N1000 ; Programm Nuten
-N1010 ; Fräsversuche Standzeit HERMR C32 U
+N1010 ; Frï¿½sversuche Standzeit HERMR C32 U
 N1020 ; erstellt 16.06.2026 rdf (Rudolf)
 
 
@@ -9,7 +9,7 @@ N1020 DEF REAL LIST_OR[LEN_LIST_OR]=(0.5,0.75,1,1.1)
 N1010 DEF INT IDX 
 N1010 DEF INT IDX_LIST_AE=1
 N1015 DEFINE LEN_LIST_AE AS 4
-N1020 DEF REAL LIST_AE[LEN_LIST_AE]=(1,0.9,0.70,0.50)
+N1020 DEF REAL LIST_AE[LEN_LIST_AE]=(1,0.95,0.85,0.65)
 
 N1025 G90 G17
 N1040 ;Parametrierung
@@ -30,7 +30,7 @@ N1130 R107=22-R102/2     	; Startpunkt X
 ;N1140 R108=R108+R104   ; Ebene Z
 
 ;NCG#data#kessler_data.com#DATA#*NCG;*RO*;*HD*
-;#"PTW"#"Technische Universität Darmstadt"#0#0#10#2#2#2#"A"#1#9#2#3#1#"26"#S27#*NCG;*RO*;*HD*
+;#"PTW"#"Technische Universitï¿½t Darmstadt"#0#0#10#2#2#2#"A"#1#9#2#3#1#"26"#S27#*NCG;*RO*;*HD*
 KESSLER_DATA(101,10,26,26,29,1,1,"PTW 000.000.010 2626 29 A")
 ;#END#*NCG;*RO*;*HD*
 
@@ -64,7 +64,7 @@ N1250 R14=0
 N1255 Z10 
 ;N1260 WAITFORTRACE
 ;NCG#envelop#kessler_envelop.com#ENVELOP#*NCG;*RO*;*HD*
-;#1#1#2#2#1#1#2#90#90#4#"Beim aktiven Datenexport werden die"#"Die Einstellungen für die Daten-"#"Prozessdaten permanent (d.h. unabhängig"#"export werden von Einstellungen des"#"von aktiven Messungen) im System gespeichert"#"vorher deklarierten/aufgerufenen"#" "#"Huellkurven-Zyklus übernommen"#2#2#1#1#1#*NCG;*RO*;*HD*
+;#1#1#2#2#1#1#2#90#90#4#"Beim aktiven Datenexport werden die"#"Die Einstellungen fï¿½r die Daten-"#"Prozessdaten permanent (d.h. unabhï¿½ngig"#"export werden von Einstellungen des"#"von aktiven Messungen) im System gespeichert"#"vorher deklarierten/aufgerufenen"#" "#"Huellkurven-Zyklus ï¿½bernommen"#2#2#1#1#1#*NCG;*RO*;*HD*
 KESSLER_ENVELOP(1,0,-1,-1,1,1,-1,-1,-1)
 ;#END#*NCG;*RO*;*HD*
 ;M00

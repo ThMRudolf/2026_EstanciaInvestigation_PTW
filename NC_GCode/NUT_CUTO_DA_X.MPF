@@ -1,5 +1,5 @@
 N1000 ; Programm Nuten
-N1010 ; Fräsversuche Standzeit HERMR C32 U
+N1010 ; Frï¿½sversuche Standzeit HERMR C32 U
 N1020 ; erstellt 16.06.2026 rdf (Rudolf)
 
 
@@ -30,7 +30,7 @@ N1130 R107=36-R102/2     	; Startpunkt Y
 ;N1140 R108=R108+R104   ; Ebene Z
 
 ;NCG#data#kessler_data.com#DATA#*NCG;*RO*;*HD*
-;#"PTW"#"Technische Universität Darmstadt"#0#0#10#2#2#2#"A"#1#9#2#3#1#"26"#S27#*NCG;*RO*;*HD*
+;#"PTW"#"Technische Universitï¿½t Darmstadt"#0#0#10#2#2#2#"A"#1#9#2#3#1#"26"#S27#*NCG;*RO*;*HD*
 KESSLER_DATA(101,10,26,26,19,1,1,"PTW 000.000.010 2626 19 A")
 ;#END#*NCG;*RO*;*HD*
 
@@ -51,11 +51,12 @@ N1175 FOR IDX =0 TO LEN_LIST_AE-1
 N1180 R107=R107+LIST_AE[IDX]*R102      ;Position X
 MSG("R107: "<<R107)
 N1190 G00 X=5+(R102/2) Y=-R107 ;F=R101;Z1O
-;N1260 WAITFORTRACE
+
 ;NCG#envelop#kessler_envelop.com#ENVELOP#*NCG;*RO*;*HD*
 ;#1#1#1#1#1#1#1#90#90#3#"Bei aktiver Referenz wird jede Messung "#"Ab hier wird jede Messung als Referenz-"#"als Referenzmessung im System abgelgt."#"messung im System abgelegt um die"#"Bei neuen Bearbeitungsprozessen mussen erst"#"spaeteren Prozessmessungen mit der "#"die Referenzmessungen durchgefuehrt werden"#"Referenz zu vergleichen"#2#2#1#1#1#*NCG;*RO*;*HD*
 KESSLER_ENVELOP(1,1,1,1,1,1,90,90,0)
 ;#END#*NCG;*RO*;*HD*
+
 N1200 G00 Z=0-R104; F=R101
 N1210 STOPRE
 N1220 R14=1 
@@ -63,12 +64,12 @@ N1230 G01 X=-R105-5-(R102/2) F=R101
 N1240 STOPRE
 N1250 R14=0
 N1255 Z10 
-;N1260 WAITFORTRACE
+
 ;NCG#envelop#kessler_envelop.com#ENVELOP#*NCG;*RO*;*HD*
-;#1#1#2#2#1#1#2#90#90#4#"Beim aktiven Datenexport werden die"#"Die Einstellungen für die Daten-"#"Prozessdaten permanent (d.h. unabhängig"#"export werden von Einstellungen des"#"von aktiven Messungen) im System gespeichert"#"vorher deklarierten/aufgerufenen"#" "#"Huellkurven-Zyklus übernommen"#2#2#1#1#1#*NCG;*RO*;*HD*
+;#1#1#2#2#1#1#2#90#90#4#"Beim aktiven Datenexport werden die"#"Die Einstellungen fï¿½r die Daten-"#"Prozessdaten permanent (d.h. unabhï¿½ngig"#"export werden von Einstellungen des"#"von aktiven Messungen) im System gespeichert"#"vorher deklarierten/aufgerufenen"#" "#"Huellkurven-Zyklus ï¿½bernommen"#2#2#1#1#1#*NCG;*RO*;*HD*
 KESSLER_ENVELOP(1,0,-1,-1,1,1,-1,-1,-1)
 ;#END#*NCG;*RO*;*HD*
-;M00
+
 ;N1255 Z10 
 N1255 ENDFOR
 N1270 G00 Z10
