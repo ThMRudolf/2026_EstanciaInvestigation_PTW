@@ -479,6 +479,33 @@ class MillingSignalUtils:
             full_scale = 2**bits - 1
             voltage = raw_counts / full_scale * v_range
         return voltage
+    # ------------------------------------------------------------------
+    # 9e.  ADC counts -> physical force
+    # ------------------------------------------------------------------
+    @staticmethod
+    def adc_counts_to_force(
+        raw_counts: np.ndarray,
+        bits: int = 16,
+        f_range: float = 1500.0,
+        bipolar: bool = True,
+    ) -> np.ndarray:
+        """
+        Convert raw ADC integer counts to physical force value. Kept as its own
+        function so bit depth / force range can be changed in one place
+        (default: 16-bit ADC, +/-1500 N bipolar input, typical Kistler
+        charge-amplifier / DAQ front end).
+
+        Bipolar:  force = raw_counts / 2**(bits-1) * f_range
+        Unipolar: force = raw_counts / (2**bits - 1) * f_range
+        """
+        raw_counts = np.asarray(raw_counts, dtype=float)
+        if bipolar:
+            full_scale = 2 ** (bits - 1)
+            force = raw_counts / full_scale * f_range
+        else:
+            full_scale = 2**bits - 1
+            force = raw_counts / full_scale * f_range
+        return force
 
     # ------------------------------------------------------------------
     # 10.  Spindle torque from measured Fx/Fy and spindle angle

@@ -53,7 +53,9 @@ verifizieren und ueber die Konstruktor-Parameter anpassen):
      "Block" (Zeitraum zwischen zwei Spindel-/Vorschubstopps, i.d.R. 4
      Schnitte) entspricht einem zusammenhaengenden Force-Burst.
   4. Innerhalb eines Blocks laeuft die Spindel durchgehend; die 4 Schnitte
-     werden durch Richtungsumkehr der dominanten Vorschubachse getrennt
+     werden durch Richtungsumkehr der dominanten Vorschubachse getrennt, 
+     bzw. über die z-Position als Ebene (2 x 4 Schnitte sind immer in der
+     gleichen z-Position erfolgt) 
      (siehe detect_cuts_in_block).
 """
 
@@ -117,7 +119,7 @@ class CutResult:
     t_end: float
     raw_table: pd.DataFrame          # SinuTrace-Stil, Rohsignale
     angle_deg: np.ndarray            # (n_angle_samples,) hochinterpolierte Spindelposition
-    force_ds: Dict[str, np.ndarray]  # herunterinterpolierte Kraftkanaele (Volt)
+    force_ds: Dict[str, np.ndarray]  # herunterinterpolierte Kraftkanaele (Newton)
     radial_force_profile: pd.DataFrame  # Summe Fr je Winkel-Bin
     csv_path: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
@@ -172,12 +174,12 @@ class CNCCutExtractor:
         Schnitt (muss mit n_angle_samples uebereinstimmen, damit Winkel
         und Kraft punktweise zusammenpassen).
     adc_bits : int, default 16
-        Aufloesung des Kraft-ADC (siehe MSU.adc_counts_to_voltage).
-    adc_v_range : float, default 10.0
-        Spannungsbereich des Kraft-ADC in Volt (siehe
-        MSU.adc_counts_to_voltage).
+        Aufloesung des Kraft-ADC (siehe MSU.adc_counts_to_force).
+    adc_f_range : float, default 1500.0
+        Konfigurierter Kraftbereich des Kistler-Ladungsverstaerkers in
+        Newton (siehe MSU.adc_counts_to_force).
     adc_bipolar : bool, default True
-        Ob der ADC bipolar (+/-10 V) oder unipolar (0-10 V) ist.
+        Ob der ADC bipolar (+/-10 V oder +/- 1500N) oder unipolar (0-10 V oder 0 - 1500 N) ist.
     min_block_duration_s : float, default 3.0
         Minimale Dauer eines zusammenhaengenden Force-Bursts, damit er als
         "Bearbeitungsblock" (und nicht als Leerlauf-Heartbeat-Sample)
@@ -256,7 +258,7 @@ class CNCCutExtractor:
         n_angle_samples: int = 1000,
         n_force_samples: int = 1000,
         adc_bits: int = 16,
-        adc_v_range: float = 10.0,
+        adc_f_range: float = 1500.0,
         adc_bipolar: bool = True,
         min_block_duration_s: float = 3.0,
         min_burst_amplitude: Optional[float] = None,
@@ -299,7 +301,7 @@ class CNCCutExtractor:
         self.n_angle_samples = n_angle_samples
         self.n_force_samples = n_force_samples
         self.adc_bits = adc_bits
-        self.adc_v_range = adc_v_range
+        self.adc_f_range = adc_f_range
         self.adc_bipolar = adc_bipolar
         self.min_block_duration_s = min_block_duration_s
         if not (0.0 <= min_programrunning_frac <= 1.0):
@@ -996,9 +998,9 @@ class CNCCutExtractor:
     ) -> CutResult:
         warn_msgs: List[str] = []
 
-        # --- Kraftkanaele (20 kHz, ADC-Rohwerte -> Volt) ---
+        # --- Kraftkanaele (20 kHz, ADC-Rohwerte -> Newton) ---
         force_raw = {}
-        force_v = {}
+        force_n = {}
         t_force_ref = None
         for si in self.FORCE_SENSOR_INDICES:
             t, raw = self._concat_force_channel(si, t_start, t_end)
@@ -1009,8 +1011,8 @@ class CNCCutExtractor:
                 warn_msgs.append(f"force_{si}: keine Daten im Schnittfenster.")
                 continue
             force_raw[f"force_{si}"] = (t, raw)
-            force_v[f"force_{si}"] = MSU.adc_counts_to_voltage(
-                raw, bits=self.adc_bits, v_range=self.adc_v_range, bipolar=self.adc_bipolar
+            force_n[f"force_{si}"] = MSU.adc_counts_to_force(
+                raw, bits=self.adc_bits, f_range=self.adc_f_range, bipolar=self.adc_bipolar
             )
             if t_force_ref is None:
                 t_force_ref = t
@@ -1029,7 +1031,7 @@ class CNCCutExtractor:
         raw_table = None
         force_sample_period = 1.0 / 20000.0
         for name, (t, _) in force_raw.items():
-            chan_df = pd.DataFrame({"time": t, name: force_v[name]}).sort_values("time")
+            chan_df = pd.DataFrame({"time": t, name: force_n[name]}).sort_values("time")
             if raw_table is None:
                 raw_table = chan_df
             else:
@@ -1070,7 +1072,7 @@ class CNCCutExtractor:
         # --- Kraft herunterinterpolieren (n_force_samples, geglaettet) ---
         force_ds: Dict[str, np.ndarray] = {}
         if t_force_ref is not None:
-            for name, v in force_v.items():
+            for name, v in force_n.items():
                 t_ch, _ = force_raw[name]
                 v_smooth = MSU.maf(v, n=max(1, int(len(v) / self.n_force_samples)))
                 _, v_ds = MSU.resample_linear_to_n(
