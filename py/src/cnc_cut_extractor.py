@@ -61,6 +61,7 @@ verifizieren und ueber die Konstruktor-Parameter anpassen):
 
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from dataclasses import dataclass, field
@@ -107,6 +108,179 @@ def _to_native(value):
     if isinstance(value, list):
         return [_to_native(v) for v in value]
     return value
+
+
+def _naive_ts(value) -> pd.Timestamp:
+    """Zeitstempel ohne Zeitzone. Hilfsfunktion fuer die separated_by_ln-Utilities unten, die mit
+    absoluten pandas-Timestamps arbeiten (anders als CNCCutExtractor selbst, das intern mit
+    Sekunden relativ zu einem globalen t_ref rechnet, siehe _rel_t())."""
+    ts = pd.Timestamp(value)
+    return ts.tz_localize(None) if ts.tzinfo is not None else ts
+
+
+# ---------------------------------------------------------------------
+# Eigenstaendige Utility-Funktionen fuer den separated_by_ln-Workflow (ein
+# raw.json je bereits korrigierter Laufnummer, siehe laufnummer_correction.py)
+# -- unabhaengig von der CNCCutExtractor-Klasse und ihrer block-/reversal-
+# basierten Schnitt-Segmentierung. Diese Dateien sind klein genug fuer
+# json.load() (anders als die Multi-GB-Rohexporte, fuer die die Klasse oben
+# ijson-Streaming benoetigt). Werden u.a. von Abschnitt 17 in
+# Schnitt_Extraktion_Beispiel.ipynb importiert: Z-Schwellenwert-
+# Eingriffserkennung + X/Z-Stabilitaets-Teilsegmentierung fuer Einzel-Nut-
+# Schnitte in Y-Richtung (X und Z muessen waehrend eines echten Schnitts
+# nahezu konstant bleiben).
+# ---------------------------------------------------------------------
+
+DEFAULT_EXPORT_AXIS_INDICES: Tuple[int, ...] = (0, 4, 5, 6)
+DEFAULT_EXPORT_AXIS_FIELDS: Tuple[str, ...] = (
+    "currentact", "loadact", "momentumtgt", "positionact", "poweract",
+    "speedorfeedact", "speedorfeedovrtgt", "speedorfeedtgt",
+)
+
+
+def load_axes_and_force(
+    json_path,
+    x_idx: int = 4,
+    z_idx: int = 6,
+    export_axis_indices: Sequence[int] = DEFAULT_EXPORT_AXIS_INDICES,
+    export_axis_fields: Sequence[str] = DEFAULT_EXPORT_AXIS_FIELDS,
+) -> Tuple[Optional[pd.DataFrame], Dict[int, pd.DataFrame]]:
+    """
+    Liest eine separated_by_ln-Datei komplett per json.load und baut (a) die 250-Hz-X/Z-
+    Positions-Zeitreihe (Kurznamen x/z, fuer Eingriffs-/Stabilitaets-Segmentierung) plus je Achse
+    in export_axis_indices die in export_axis_fields aufgefuehrten Rohwerte (als
+    axis{index}_{feld}-Spalten) und (b) je Kraftkanal (sensoridx 0/1/2) eine 20-kHz-Zeitreihe in
+    Newton (ADC-Rohwerte via MillingSignalUtils.adc_counts_to_force, bits=16, f_range=1500.0,
+    bipolar=True -- gleiche Kalibrierung wie extract_cut()).
+
+    Returns
+    -------
+    (None, {}) falls die Datei keine 'machine'-Dokumente enthaelt, sonst (pos_df, force_series).
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        docs = json.load(f)
+
+    pos_rows = []
+    force_docs: Dict[int, list] = {0: [], 1: [], 2: []}
+    for doc in docs:
+        sensortype = doc.get("sensortype")
+        if sensortype == "machine":
+            t0 = _naive_ts(_to_native(doc["time"]))
+            for i, snap in enumerate(doc["data"]):
+                t = t0 + pd.Timedelta(seconds=i / 250.0)
+                row = {
+                    "time": t,
+                    "x": _to_native(snap["axes"][x_idx]["positionact"]),
+                    "z": _to_native(snap["axes"][z_idx]["positionact"]),
+                }
+                for ai in export_axis_indices:
+                    ax = snap["axes"][ai]
+                    for field_name in export_axis_fields:
+                        row[f"axis{ai}_{field_name}"] = _to_native(ax[field_name])
+                pos_rows.append(row)
+        elif sensortype == "force":
+            idx = doc.get("sensoridx")
+            if idx in force_docs:
+                t0 = _naive_ts(_to_native(doc["time"]))
+                force_docs[idx].append((t0, np.asarray(doc["data"], dtype=float)))
+
+    if not pos_rows:
+        return None, {}
+    pos_df = pd.DataFrame(pos_rows).sort_values("time").reset_index(drop=True)
+    value_cols = [c for c in pos_df.columns if c != "time"]
+    for c in value_cols:
+        pos_df[c] = pd.to_numeric(pos_df[c], errors="coerce")
+    pos_df["time"] = pos_df["time"].astype("datetime64[ns]")
+
+    force_series: Dict[int, pd.DataFrame] = {}
+    for idx, docs_list in force_docs.items():
+        if not docs_list:
+            continue
+        docs_list.sort(key=lambda d: d[0])
+        t_list, v_list = [], []
+        for t0, data in docs_list:
+            t_list.append(t0 + pd.to_timedelta(np.arange(len(data)) / 20000.0, unit="s"))
+            v_list.append(data)
+        t_all = np.concatenate([t.values for t in t_list])
+        v_all = np.concatenate(v_list)
+        order = np.argsort(t_all)
+        df = pd.DataFrame({"time": pd.DatetimeIndex(t_all[order]), "raw": v_all[order]})
+        df["time"] = df["time"].astype("datetime64[ns]")
+        df["force_n"] = MSU.adc_counts_to_force(df["raw"].to_numpy(), bits=16, f_range=1500.0, bipolar=True)
+        force_series[idx] = df
+
+    return pos_df, force_series
+
+
+def contiguous_true_runs(mask: np.ndarray) -> List[Tuple[int, int]]:
+    """Start-/End-Indizes (Ende exklusiv) zusammenhaengender True-Laeufe in einem 1D-Bool-Array."""
+    padded = np.concatenate(([False], mask, [False]))
+    edges = np.flatnonzero(np.diff(padded))
+    return list(zip(edges[0::2], edges[1::2]))
+
+
+def find_stable_subruns(
+    x: np.ndarray, z: np.ndarray, x_thr: float, z_thr: float, min_len: int
+) -> List[Tuple[int, int]]:
+    """
+    Single-Pass GROWING-RUN-Segmentierung (kein festes Rolling-Window): erweitert einen
+    Kandidatenlauf sample-fuer-sample, solange sowohl die laufende X- als auch die laufende
+    Z-Spannweite unterhalb der jeweiligen Schwelle bleiben (physikalische Begruendung: eine Nut in
+    Y-Richtung darf X und Z waehrend eines echten Einzel-Nut-Schnitts nicht nennenswert aendern).
+    Sobald eine Erweiterung eine Schwelle ueberschreiten wuerde, wird der aktuelle Lauf geschlossen
+    (nur behalten, wenn er >= min_len Samples lang ist) und ein neuer Lauf beim aktuellen Sample
+    begonnen. Gibt lokale (start, end)-Indexpaare (Ende exklusiv, relativ zu x/z) zurueck.
+    """
+    n = len(x)
+    if n == 0:
+        return []
+    subruns = []
+    run_start = 0
+    x_min = x_max = x[0]
+    z_min = z_max = z[0]
+    for i in range(1, n):
+        new_x_min, new_x_max = min(x_min, x[i]), max(x_max, x[i])
+        new_z_min, new_z_max = min(z_min, z[i]), max(z_max, z[i])
+        if (new_x_max - new_x_min) < x_thr and (new_z_max - new_z_min) < z_thr:
+            x_min, x_max, z_min, z_max = new_x_min, new_x_max, new_z_min, new_z_max
+            continue
+        if i - run_start >= min_len:
+            subruns.append((run_start, i))
+        run_start = i
+        x_min = x_max = x[i]
+        z_min = z_max = z[i]
+    if n - run_start >= min_len:
+        subruns.append((run_start, n))
+    return subruns
+
+
+def build_segment_table(
+    seg_pos: pd.DataFrame,
+    seg_force_by_idx: Dict[int, pd.DataFrame],
+    t_start: pd.Timestamp,
+    merge_tolerance_ms: float = 4,
+) -> pd.DataFrame:
+    """
+    Baut die Export-Tabelle fuer ein Segment (z.B. ein stabiles Teilsegment aus
+    find_stable_subruns()): Kraftkanaele (force_0/1/2, 20 kHz, Newton) als Basis-Zeitachse, dazu
+    alle axis*_*-Rohwerte aus seg_pos (250 Hz) per merge_asof (nearest) angehaengt -- gleiches
+    Prinzip wie raw_table in CNCCutExtractor.extract_cut(). 'time' wird danach zu Sekunden relativ
+    zu t_start umgerechnet (Zeitvektor beginnt bei 0).
+    """
+    table = None
+    for idx in sorted(seg_force_by_idx):
+        fdf = seg_force_by_idx[idx][["time", "force_n"]].rename(columns={"force_n": f"force_{idx}"})
+        table = fdf if table is None else pd.merge_asof(
+            table.sort_values("time"), fdf.sort_values("time"), on="time",
+            direction="nearest", tolerance=pd.Timedelta(milliseconds=merge_tolerance_ms),
+        )
+    axis_cols = [c for c in seg_pos.columns if c.startswith("axis")]
+    table = pd.merge_asof(
+        table.sort_values("time"), seg_pos[["time"] + axis_cols].sort_values("time"), on="time",
+        direction="nearest", tolerance=pd.Timedelta(milliseconds=merge_tolerance_ms),
+    )
+    table["time"] = (table["time"] - t_start).dt.total_seconds()
+    return table
 
 
 @dataclass
