@@ -6,6 +6,37 @@
 
 ---
 
+## Getting Started
+
+### 1. Activate the environment
+
+The project uses a local virtual environment named `myenv` (not committed to the repo). Create it once and activate it before running anything:
+
+```bat
+:: create (first time only)
+python -m venv myenv
+
+:: activate (Windows cmd)
+myenv\Scripts\activate.bat
+
+:: install dependencies
+pip install -r requirements.txt
+```
+
+> PowerShell users: activate with `myenv\Scripts\Activate.ps1` instead.
+
+### 2. Run the `nb_ae` notebooks
+
+With `myenv` active, launch Jupyter (`jupyter lab` or `jupyter notebook`) from the repo root, or open the notebooks in VS Code/JupyterLab with the `myenv` kernel selected. Run `nb_ae/ae_estimation_data_prep.ipynb` first — it builds the shared preprocessing pipeline that the other `nb_ae` notebooks depend on (see [§9 Related Notebooks](#9-related-notebooks) for the full list and run order).
+Finally you can run `nb_ae/ae_estimation_step12_gridsearch_vs_tpe.ipynb` y `nb_ae/ae_estimation_step13_ensamble_methods.ipynb`.
+Running `nb_ae/ae_estimation_step12_gridsearch_vs_tpe.ipynb` and `nb_ae/ae_estimation_step12_gridsearch_vs_tpe_gpu.ipynb` compares the evaluation time fo gpu run vs. cpu run. This evaluation was just curiosity of the author and is not documented further.
+
+### 3. Data
+
+The raw and preprocessed measurement data are **not stored in this repository**. They live in a shared OneDrive folder with limited/restricted access — contact the repo owner for access (https://itam2-my.sharepoint.com/:f:/g/personal/thomas_rudolf_itam_mx/IgCjhfF8T1KpTYGL9AUhNvQjAYZc8RMFDqONRW00uuv3Zdo?e=mhvvZh) . Once you have a local copy, update the data path variable near the top of each notebook (e.g. `data_file_path`) to point to your local copy before running.
+
+---
+
 ## Table of Contents
 
 1. [Overview](#1-overview)
@@ -19,6 +50,7 @@
 6. [Stan Integration](#6-stan-integration)
 7. [Quick-Start Examples](#7-quick-start-examples)
 8. [Parameter Reference Tables](#8-parameter-reference-tables)
+9. [Related Notebooks](#9-related-notebooks)
 
 ---
 
@@ -106,11 +138,11 @@ Gaussian noise models thermal noise and amplifier noise, which — by the centra
 
 The total noise variance is:
 
-$$\{Var}(\eta) = \frac{A^2}{3} + \sigma^2$$
+$$\eta = \frac{A^2}{3} + \sigma^2$$
 
 The signal-to-noise ratio in dB is:
 
-$$\{SNR} = 10 \log_{10}\!\left(\frac{\{Var}(M_c^{\text{clean}})}{\{Var}(\eta)}\right)$$
+$$\text{SNR} = 10 \log_{10}\!\left(\frac{M_c^{\text{clean}}}{\eta}\right)$$ 
 
 Note that the Gaussian mean *μ* shifts the signal baseline but does not contribute to noise power.
 
@@ -624,6 +656,26 @@ print(f"Beta prior: α = {alpha:.2f}, β = {beta:.2f}")
 | Aluminium alloys | 700 – 1 000 | 0.20 – 0.28 |
 | Cast iron (GG25) | 900 – 1 400 | 0.20 – 0.26 |
 | Titanium (Ti-6Al-4V) | 2 000 – 2 800 | 0.25 – 0.35 |
+
+---
+
+## 9. Related Notebooks
+
+### `nb_ae/` — Radial engagement (*a*_e/D) estimation
+
+Jupyter notebooks that train and compare machine-learning models predicting radial engagement (*a*_e/D) from Kienzle-normalised spindle-current features. All notebooks share the same preprocessing pipeline (segment rebuilding, Kienzle-normalisation feature, train/val/test scaling).
+
+| Notebook | Purpose |
+|---|---|
+| `ae_estimation_data_prep.ipynb` | Base pipeline: dataset segmentation, Kienzle-normalisation feature, MLP definition/training, MC-Dropout uncertainty estimation. |
+| `ae_estimation_ann_single_check.ipynb` | Same pipeline as a quick single-configuration sanity check of the MLP. |
+| `ae_estimation_step11_tpe.ipynb` | Step 11 — Optuna/TPE Bayesian hyperparameter search over the MLP (architecture, dropout, segment length), continuing from the base pipeline. |
+| `ae_estimation_step12_gridsearch_vs_tpe.ipynb` / `..._gpu.ipynb` | Step 12 — head-to-head comparison of grid search vs. TPE over the same hyperparameter space (GPU variant runs the same comparison with GPU-accelerated training). |
+| `ae_estimation_step13_ensemble_methods.ipynb` | Step 13 — Random Forest, XGBoost and LightGBM applied to the same feature vectors, compared against the MLP. |
+
+### `nb_mcmc/` — Bayesian parameter estimation (side project)
+
+`nb_mcmc/kienzle_bayesian_mcmc.ipynb` estimates the Kienzle constants *k*_c1.1 and *m*_c from simulated/measured torque signals via MCMC (Stan through CmdStanPy, and JAGS), reusing `KienzleModel` and `MillingSignalUtils`. It is developed jointly with the `nb_ae` work but is an **independent side project** (course work for *Métodos Analíticos*, ITAM) and is **not part of the Estancia de Investigación PTW** scope.
 
 ---
 
