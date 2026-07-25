@@ -1,0 +1,558 @@
+\documentclass[12pt, letterpaper]{article}
+
+% ── Paquetes ──────────────────────────────────────────────────────────────────
+\usepackage[spanish]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bbm}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{lmodern}
+\usepackage{longtable}
+
+% ── Geometría de página ───────────────────────────────────────────────────────
+\geometry{top=2.5cm, bottom=2.5cm, left=3.0cm, right=2.5cm}
+
+% ── Tipografía ────────────────────────────────────────────────────────────────
+\onehalfspacing
+
+% ── Color institucional ───────────────────────────────────────────────────────
+\definecolor{azulInst}{RGB}{0, 51, 102}
+
+% ── Encabezados y pies de página ─────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{azulInst}\textit{Reporte de Finalización de Estancia}}
+\fancyhead[R]{\small\color{azulInst}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Formato de secciones ─────────────────────────────────────────────────────
+\titleformat{\section}{\large\bfseries\color{azulInst}}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+\titlespacing*{\section}{0pt}{1.5ex plus .2ex}{0.8ex plus .2ex}
+
+% ── Hiperlinks ────────────────────────────────────────────────────────────────
+\hypersetup{colorlinks=true, linkcolor=azulInst, urlcolor=azulInst, citecolor=azulInst}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+
+% ── Portada ───────────────────────────────────────────────────────────────────
+\thispagestyle{empty}
+\begin{center}
+  {\Large\bfseries\color{azulInst} REPORTE DE FINALIZAIÓN DE ESTANCIA DE INVESTIGACIÓN}\\[0.4cm]
+  {\large ITAM -- Instituto Tecnologico Autonomo de Mexico}\\[0.8cm]
+  \rule{\linewidth}{1pt}\\[0.4cm]
+  {\LARGE\bfseries
+    Ingenieria de Caracteristicas con Base Fisica y Optimizaión\\[0.2cm]
+    de Hiperparametros para un Estimador MLP del material en contacto Radial\\[0.2cm]
+    en Fresado CNC}\\[0.4cm]
+  \rule{\linewidth}{1pt}\\[0.8cm]
+\end{center}
+
+\begin{tabular}{ll}
+  \textbf{Estudiante:}       & Thomas Martin Rudolf, c.u.\ 169296 \\[0.2cm]
+  \textbf{Programa:}         & Maestria en Ciencia de Datos \\[0.2cm]
+  \textbf{Asesor:}           & Edgar Francisco Roman Rangel \\[0.2cm]
+  \textbf{Instituión:}      & ITAM -- Instituto Tecnologico Autonomo de Mexico \\[0.2cm]
+  \textbf{Periodo:}          & Junio de 2026 -- Agosto de 2026 \\[0.2cm]
+  \textbf{Total de horas:}   & 240 horas \\[0.2cm]
+  \textbf{Fecha de emision:} & \today \\
+\end{tabular}
+
+\newpage
+\setcounter{page}{1}
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Contexto de la Organización}
+
+\subsection{Descripción del entorno industrial}
+
+El fresado CNC (\textit{Computer Numerical Control milling}) es uno de los procesos de manufactura sustractiva mas utilizados en la industria metalmecanica moderna, \cite{altintas2012}. La transición hacia esquemas de manufactura inteligente ha impulsado el desarrollo de sistemas de monitoreo indirecto de procesos que permiten inferir el estado del corte a partir de señales ya disponibles en el controlador de la maquina, sin necesidad de instrumentación adicional de alto costo, \cite{byrne1995, postel2019}. Durante la estancia se desarrollo en el marco de esta linea de investigación de monitoreo un estimador de parámetros de corte. Se tiene acceso a un centro de maquinado Siemens SINUMERIK y a un conjunto de datos de señales de corriente generadora de torque (\textit{torque-generating current}) adquiridas en formato SinuTrace CSV. Se usa el modelo de Kienzle para la forcas de corte y torque, \cite{kienzle1957}.
+
+\subsection{Area de trabajo y equipo}
+
+El conjunto de datos utilizado comprende 64 archivos de medición de fresado plano, cada uno con la señal de corriente del motor del husillo como serie de tiempo muestreada a frecuencia $f_s$, junto con los parametros de corte correspondientes: profundidad de corte axial $a_p$, avance por diente $f_z$, diametro de herramienta $D$, numero de dientes $z$ y velocidad de husillo $n$ en rpm. Los parametros de corte y los metadatos de cada experimento se almacenan en tablas independientes denominadas \texttt{cut\_param} y \texttt{df\_info}, y se vinculan a cada medición por indice de experimento. Las constantes nominales de Kienzle para el material de la pieza, $k_{c1.1}^{\text{nom}}$ y $m_c^{\text{nom}}$, provienen de la base de materiales, \cite{MachiningDoctorKc}.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Descripción del Problema desde la Perspectiva del Negocio}
+
+El material en contacto radial ($a_e$), expresado como la razón $a_e/D$ donde $D$ es el diámetro de la herramienta, es un parámetro de proceso que no puede medirse directamente durante el fresado plano. Sin embargo, $a_e$ gobierna la carga instantánea de la viruta y, a través del modelo de fuerzas de corte de Kienzle, determina la corriente necesario para generar el torque del motor del husillo. Esta relación física es la que hace posible la estimación indirecta de la energía necesaria.
+
+Desde la perspectiva operativa, la falta de observabilidad de $a_e/D$ en tiempo real genera consecuencias concretas para la empresa: en operaciones con trayectorias complejas, como contorneado adaptativo, cavidades de forma libre, estrategias trocoidales. El valor de $a_e$ varia de forma continua a lo largo del recorrido de herramienta y no coincide necesariamente con el valor programado. Esta discrepancia provoca sobrecargas no anticipadas que aceleran el desgaste de la herramienta, incrementan el riesgo de rotura y obligan a los operadores a trabajar con parámetros conservadores que sacrifican productividad. La solución de valor consiste en estimar $a_e/D$ de forma indirecta a partir de la corriente del motor del husillo, variable accesible sin costo adicional de instrumentación en la mayoria de los centros de maquinado modernos.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Metas y Objetivos}
+
+\subsection{Objetivo general}
+
+Desarrollar e implementar un estimador basado en un Perceptron Multicapa (MLP por sus siglas en ingles) capaz de predecir el material en contacto radial $a_e/D$ en operaciones de fresado CNC a partir de un vector de características con base física extraído de la señal de corriente del motor del husillo, comparando dos estrategias de optimización de hiperparametros: búsqueda exhaustiva en rejilla (\textit{Grid Search}) y estimador de Parzen estructurado en árbol (\textit{Tree-structured Parzen Estimator}, TPE) de tipo bayesiano.
+
+\subsection{Objetivos específicos}
+
+\begin{enumerate}[label=\arabic*.]
+  \item Preprocesar las señales de corriente mediante corrección de fricción en vacío, eliminación de transitorios de arranque y segmentación en $N_{\text{seg}}$ partes iguales, tratando $N_{\text{seg}}$ como hiperparametro adicional.
+  \item Construir un vector de características con base física que incluya descriptores estadísticos, estadísticas de torque por revolución, energía espectral en la banda de frecuencia de diente y un residuo normalizado de Kienzle, de forma que cada característica tenga una interpretación explicita bajo el modelo de fuerzas de corte.
+  \item Implementar la arquitectura MLP con dropout uniforme por capa y entrenarla minimizando la función de perdida de Huber con optimizador Adam, tamaño de lote 16 y presupuesto de 300 epocas.
+  \item Comparar el Grid Search (144 configuraciones) y el TPE bayesiano (máximo 80 ensayos con poda Hyperband) bajo condiciones identicas de entrenamiento, evaluando tanto la precisión de perdición como la eficiencia de búsqueda.
+  \item Cuantificar la incertidumbre mediante MC Dropout (\textit{Monte Carlo Dropout}) con $T$ pasadas estocásticas en inferencia, reportando la media predictiva $\hat{\mu}$ y la varianza $\hat{\sigma}^2$ para ambas configuraciones seleccionadas.
+  \item Documentar los resultados en formato de reporte técnico.
+\end{enumerate}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Situación Actual con Respecto a la Problemática}
+
+Al inicio de la estancia, se contaba con 64 archivos de señales de corriente del husillo adquiridas en una maquina Siemens SINUMERIK bajo distintas combinaciones de $a_p$, $f_z$ y $a_e/D$. Los parámetros nominales de Kienzle para el par material--herramienta se encuentran en una tabla, \cite{MachiningDoctorKc} para el material C45. Sin embargo, no existia ningun modelo de estimacion de $a_e/D$ entrenado ni validado, ni un pipeline sistematico de preprocesamiento y extración de caracteristicas.
+
+La practica habitual consistia en seleccionar los parametros de corte con base en las recomendaciones del fabricante de herramientas, sin retroalimentaión en tiempo real sobre el estado de material en contacto durante la ejecución del programa CNC. La ausencia de un pipeline estructurado implico que la estancia abarcara desde el preprocesamiento de señales hasta la comparativa completa de estrategias de optimización de hiperparametros, representando un desarrollo integral de cero a producto funcional.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Planteamiento del Problema desde la Perspectiva de Ciencia de Datos}
+
+\subsection{Formulación formal del problema}
+
+Sea $\mathbf{x} \in \mathbb{R}^d$ el vector de características extraídas de un segmento de la señal de corriente corregida $I_c^{(j)}$. El objetivo es aprender una función $f: \mathbb{R}^d \to [0,1]$ tal que
+
+\begin{equation}
+  \widehat{a_e/D} = f(\mathbf{x};\,\theta),
+  \label{eq:problema}
+\end{equation}
+
+donde $\theta$ representa los parámetros del modelo estimados a partir de los datos de entrenamiento. A diferencia de una formulación puramente basada en datos, el vector $\mathbf{x}$ se construye de modo que cada entrada tenga una interpretación explicita bajo el modelo de Kienzle, \cite{kienzle1957}, lo que permite contrastar la predicción del modelo con la mecánica de corte subyacente en lugar de tratarlo como una regresión de caja negra.
+
+\subsection{Modelo de fuerzas de corte de Kienzle}
+\label{sec:kienzle}
+
+Kienzle \cite{kienzle1957} describe la fuerza de corte especifica $k_c$ como una función de ley de potencia del espesor de la viruta $h$:
+
+\begin{equation}
+  k_c(h) = k_{c1.1} \cdot h^{1-m_c},
+  \label{eq:kc}
+\end{equation}
+
+donde $k_{c1.1}$ es la fuerza de corte especifica al espesor de referencia $h = 1\,\text{mm}$ y $m_c$ es la pendiente material-dependiente de la relación fuerza--espesor en escala logarítmica. Ambas constantes son valores empíricos identificados para el material de la pieza; en este trabajo se utilizan como valores nominales fijos $k_{c1.1}^{\text{nom}}$ y $m_c^{\text{nom}}$. La forma de ley de potencia de la ec.~(\ref{eq:kc}) captura el efecto de tamaño observado en el maquinado de metales, por el cual la fuerza especifica aumenta conforme disminuye el espesor de la viruta, y constituye el vinculo entre las condiciones geométricas de corte y la fuerza resultante que explota el resto de esta sección.
+
+En fresado plano con $z$ dientes, el espesor de la viruta varia con la posición angular $\varphi_i$ de cada diente $i$ conforme avanza por la pieza. Para un avance por diente $f_z$, el espesor instantáneo del diente $i$ es
+
+\begin{equation}
+  h_i(\varphi_i) = f_z \sin\varphi_i,
+  \label{eq:h}
+\end{equation}
+
+el cual se anula en la entrada y salida del corte ($\varphi_i \in \{0,\pi\}$) y es máximo en $\varphi_i = \pi/2$. Combinando las ecs.~(\ref{eq:kc}) y (\ref{eq:h}), y tomando el ancho de la viruta igual a la profundidad de corte $a_p$ para un angulo de filo $\kappa = 90^{\circ}$, la fuerza de corte tangencial del diente $i$ es
+
+\begin{equation}
+  F_{c,i}(\varphi_i) = k_{c1.1} \cdot a_p \cdot f_z^{\,1-m_c} \cdot (\sin\varphi_i)^{1-m_c}.
+  \label{eq:Fc}
+\end{equation}
+
+La posición angular del diente $i$ en el tiempo $t$ sigue de la velocidad angular del husillo $\omega$ y del desfase $2\pi/z$ entre dientes consecutivos:
+
+\begin{equation}
+  \varphi_i(t) = \bigl(\varphi_0 + \omega t - (i-1)\tfrac{2\pi}{z}\bigr) \bmod 2\pi, \qquad i = 1,\dots,z.
+  \label{eq:phi}
+\end{equation}
+
+Un diente contribuye al torque de corte unicamente mientras esta en contacto con la pieza, es decir, mientras $\varphi_i(t)$ se encuentra dentro de la ventana de material en contacto $[\varphi_{\text{in}}, \varphi_{\text{out}}]$. El ancho de esta ventana lo determina $a_e/D$; dado un angulo de salida $\varphi_{\text{out}}$, el angulo de entrada se obtiene de la geometría de fresado periférico como
+
+\begin{equation}
+  \varphi_{\text{in}} = \varphi_{\text{out}} - \arccos\!\left(1 - \frac{2a_e}{D}\right).
+  \label{eq:phi_in}
+\end{equation}
+
+La ec.~(\ref{eq:phi_in}) establece el vinculo entre $a_e/D$ y la fracción de cada revolución durante la cual la fuerza de corte de la ec.~(\ref{eq:Fc}) es distinta de cero. Un mayor $a_e/D$ amplia la ventana de material en contacto, aumenta el numero de dientes en corte en cada instante y eleva el torque promedio de corte; este mecanismo es el que las características con base física de la Sección~\ref{sec:features} están diseñadas para capturar.
+
+Sumando las contribuciones de todos los dientes en contacto y convirtiendo de fuerza a torque mediante el radio $D/2$, el torque total de corte en el tiempo $t$ es
+
+\begin{equation}
+  M_c(t) = \frac{D}{2} \sum_{i=1}^{z} \mathbbm{1}\!\bigl[\varphi_i(t) \in [\varphi_{\text{in}},\varphi_{\text{out}}]\bigr] \cdot F_{c,i}\bigl(\varphi_i(t)\bigr),
+  \label{eq:Mc}
+\end{equation}
+
+donde $\mathbbm{1}[\cdot]$ es la función indicadora. El accionamiento del husillo no entrega torque directamente; entrega la corriente generadora de torque $I_q(t)$, relacionada con $M_c(t)$ a través de la constante de torque del motor $k_m$ (en $\text{N mm}/\text{A}$), con un desplazamiento aditivo de corriente en vacío $\bar{I}_{\text{frict}}$:
+
+\begin{equation}
+  I_q(t) = \frac{M_c(t)}{k_m} + \bar{I}_{\text{frict}}.
+  \label{eq:Iq}
+\end{equation}
+
+$\bar{I}_{\text{frict}}$ representa la corriente necesaria para vencer la fricción del husillo y la transmisión en ausencia de corte, y se mide durante una ventana de husillo en vació. En conjunto, las ecs.~(\ref{eq:kc}) a (\ref{eq:Iq}) definen el mapa directo desde los parámetros de corte $(a_p, f_z, D, z, a_e, \omega)$ y las constantes de Kienzle $(k_{c1.1}, m_c)$ hacia la corriente del husillo medida, y constituyen la base física sobre la que se interpretan las características de la Sección~\ref{sec:features}.
+
+\subsection{Adquisición de Datos}
+
+Para la adquisición de las señales que alimentan al pipeline de estimación indirecta de $a_e$, los se empleo dos centros de mecanizado Emco E900 y Hermle C32U equipado con el control numérico Siemens SINUMERIK 840D. A través del numerical control kernel (NCK) de este control, las señales de corriente generadora de par (torque-generating current) y la velocidad del motor del spindle, las posiciones $x$, $y$ y $z$ se extrae como a una frecuencia de muestreo de 500 Hz (E900) y 250 Hz (C32U). Dado que estas señales se obtiene directamente del NCK, su adquisición no requiere hardware adicional ni intervención sobre la cadena cinemática de la máquina.
+
+Con el fin de contar con una referencia directa de fuerza de corte para el entrenamiento y validación del modelo, se instalo una placa dinamométrica Kistler Type 9257B (SN 1827368), acoplada a una cadena de amplificadores de carga Kistler Type 5407A (SN 5651377) y Type 5074B311 (SN 5943640). La señal de fuerza se digitaliza a 20\,000 Hz en tres canales (sensoridx 0, 1 y 2), acompañada de canales adicionales de aceleración a 20\,000 Hz y de desplazamiento (distance) a 10\,000 Hz, también en configuración de tres ejes. Esta combinación de señal indirecta (corriente NC, 500 Hz y 250 Hz) y señal directa (fuerza Kistler, 20\,000 Hz) permite contrastar la estimación basada en corriente contra la medición de referencia bajo las mismas condiciones de corte.
+
+Los ensayos se realizaron con dos herramientas  Sandvik R216-16T08 (E900) de 40 mm de diámetro y dos dientes y GARANT VHM-Schruppfräser MTC (C32U) de 10 mm de diámetro con 4 dientes. El material de corte fue C45.
+
+Las mediciones principales cubrieron valores de $a_e$ de 100\,\%, 95\,\%, 85\,\% y 65\,\%; pruebas posteriores extendieron el barrido a 100\,\%, 90\,\%, 70\,\% y 50\,\%. Adicionalmente, la velocidad de avance (F), la velocidad de husillo (N) y la profundidad axial de corte ($a_p$) se variaron entre 90\,\% y 110\,\% de sus valores de referencia. Para la herramienta de Sandvik, los valores de referencia (100\,\%) fueron $F = 256 mm/min$ y $N = 2108 rpm$. Para la herramienta GARANT, los valores. La profundidad axial de referencia ($a_p$ = 100\,\%) fue de 1 mm en ambos casos.
+
+Cada experimento comprendió 64 cortes, organizados en dos repeticiones de cuatro cortes por nivel de profundidad de corte. Dentro de cada grupo de cuatro cortes, únicamente $a_e$ se varió, manteniendo el resto de los parámetros de corte constantes, lo cual aísla el efecto del material en contacto radial sobre la señal medida.
+
+Los datos crudos se almacenan en en archivos CSV en el centro de maquinado E300 y cada columna representa una señal iniciando con la columna de tiempo. En el centro de maquinado C32U se almacenan en una base de datos MongoDB, con un documento escrito por segundo para cada combinación de sensor y eje. Cada documento incluye los campos \texttt{device}, \texttt{process}, \texttt{sensoridx}, \texttt{sensortype} (\texttt{acceleratión}, \texttt{distance}, \texttt{force} o \texttt{machine}), \texttt{spindleidx}, \texttt{time} y \texttt{workpiecedata} (materialnr, batchnr, serialnr), junto con el arreglo de datos correspondiente al buffer de un segundo: 250 muestras para el canal NC, 20\,000 muestras para fuerza y aceleración, y 10\,000 muestras para desplazamiento. Sin embargo, el pipeline de preprocesamiento que sincroniza estos canales de frecuencias heterogéneas y los transforma en las características físicamente fundamentadas descritas en la sección de Metodología aún no ha sido implementado sobre esta fuente de datos, lo cual constituye el siguiente paso antes de la etapa de entrenamiento del modelo.
+
+\subsection{Preprocesamiento y segmentación de señales}
+\label{sec:preprocesamiento}
+
+Con el fin de obtener una señal limpia para la extracción de características, cada señal de corriente cruda $I(t)$ se corrige sustrayendo la corriente media en vacío $\bar{I}_{\text{frict}}$ medida antes del material en contacto de la herramienta:
+
+\begin{equation}
+  I_c(t) = I(t) - \bar{I}_{\text{frict}}.
+  \label{eq:Ic}
+\end{equation}
+
+Una vez aplicada la corrección, se descarta el intervalo inicial de rampa de arranque, durante el cual el husillo acelera hasta la velocidad comandada y la herramienta aun no ha alcanzado el material en contacto en estado estacionario. La señal restante se divide en $N_{\text{seg}}$ segmentos contiguos de igual longitud:
+
+\begin{equation}
+  I_c(t) \;\longrightarrow\; \bigl\{I_c^{(1)}, I_c^{(2)}, \dots, I_c^{(N_{\text{seg}})}\bigr\}, \qquad
+  |I_c^{(j)}| = \left\lfloor \frac{|I_c|}{N_{\text{seg}}} \right\rfloor,
+  \label{eq:segmentacion}
+\end{equation}
+
+donde cada segmento hereda los parámetros de corte de la medición original. La segmentación cumple dos propósitos: multiplica el numero de muestras de entrenamiento (por ejemplo, $N_{\text{seg}}=4$ expande el conjunto de 64 a 256 muestras) y expone el modelo a variaciones localizadas del material en contacto dentro de un mismo pase. Dado que la longitud optima de segmento tiene una interpretación fisica vinculada a las fases de material en contacto por diente, $N_{\text{seg}}$ se trata como hiperparametro adicional en la optimización descrita en la Sección~\ref{sec:hpo}.
+La figura \ref{fig:current} muestra la señal de la corriente: la linea azul represente la señal cruda y la señal naranja el "moving average" de la corriente por una rotación. Este valor se sustraye de la señal cruda y se obtiene la señal verde. La primera linea puntada es el momento hasta donde se calucula la fricción del cabezal sin trabajo. La segunda indica que que proceso de corte ya está en las condiciones definidas. a partir de este tiempo se usa la señal. En el ejemplo se dividió en 4 segmentos.
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{img/signal_current_intervalls.png}
+    \caption{corriente del husillo con intervalos de 4. separación de corte en el aire y arranque}
+    \label{fig:current}
+\end{figure}
+
+
+\subsection{Extracción de características con base física}
+\label{sec:features}
+
+Para cada segmento $I_c^{(j)}$ se construye un vector de características de longitud fija $\mathbf{x} \in \mathbb{R}^d$. Las características se agrupan en tres categorías: descriptores estadísticos globales, estadísticas de torque por revolución y descriptores espectrales y de residuo normalizado de Kienzle.
+
+Los descriptores estadisticos globales capturan la distribución de amplitud de la señal en el segmento. El valor eficaz (RMS), la amplitud pico, el factor de cresta, el valor medio rectificado y la desviación estandar se calculan como
+
+\begin{equation}
+  \text{RMS} = \sqrt{\frac{1}{T}\sum_{t=1}^{T} I_c(t)^2}, \qquad
+  \text{pico} = \max_t |I_c(t)|, \qquad
+  \text{cresta} = \frac{\text{pico}}{\text{RMS} + \varepsilon},
+  \label{eq:estadisticos}
+\end{equation}
+
+donde $T$ es la longitud del segmento en muestras y $\varepsilon = 10^{-9}$ previene la división por cero.
+
+Las estadísticas de torque por revolución aprovechan la estructura periódica de la señal de fresado. El segmento se divide en revoluciones completas del husillo de longitud $T_{\text{rev}} = \lfloor f_s \cdot 60 / n \rfloor$ muestras. Para cada revolución $k$ se calculan la corriente media $\bar{I}_k$ y la corriente máxima $I_{\max,k}$, obteniendo las características agregadas por revolución
+
+\begin{equation}
+  \overline{\bar{I}} = \frac{1}{K}\sum_{k=1}^{K} \bar{I}_k, \qquad
+  \overline{I_{\max}} = \frac{1}{K}\sum_{k=1}^{K} I_{\max,k}, \qquad
+  \sigma_{I_{\max}} = \sqrt{\frac{1}{K-1}\sum_{k=1}^{K}\!\left(I_{\max,k} - \overline{I_{\max}}\right)^2},
+  \label{eq:torque_rev}
+\end{equation}
+
+con $K$ el numero de revoluciones completas en el segmento. El máximo de corriente por revolución esta directamente motivado por el modelo de Kienzle, dado que el torque pico por revolución escala con el espesor máximo de la viruta, el cual depende de $a_e$ a través de los ángulos de entrada y salida de la herramienta.
+
+La frecuencia de paso de diente es
+
+\begin{equation}
+  f_{\text{diente}} = \frac{n}{60} \cdot z \quad \text{[Hz]},
+  \label{eq:f_diente}
+\end{equation}
+
+y la característica espectral es la fracción de la energía total de la señal contenida en una banda de $\pm 50\,\text{Hz}$ alrededor de $f_{\text{diente}}$:
+
+\begin{equation}
+  E_{\text{diente}} = \frac{\displaystyle\sum_{f \,\in\, [f_{\text{diente}}-50,\; f_{\text{diente}}+50]}|S(f)|^2}{\displaystyle\sum_{f} |S(f)|^2 + \varepsilon},
+  \label{eq:E_diente}
+\end{equation}
+
+donde $S(f) = |\widehat{I_c}(f)|$ es el espectro de magnitud obtenido mediante la  Fast Fourier Transformation (FFT) de valores reales, \cite{schmitz2009}. La normalización por la energía espectral total convierte a $E_{\text{diente}}$ en una característica invariante a la amplitud global de la señal. Dado que un mayor $a_e$ aumenta el material en contacto por paso de diente, la modulación de la fuerza de corte en $f_{\text{diente}}$ se intensifica y $E_{\text{diente}}$ crece de forma monótona, lo que la convierte en un predictor con fundamento físico del objetivo de regresión.
+
+El residuo normalizado de Kienzle cuantifica la parte de la señal medida que no explica la predicción nominal del modelo a los parámetros comandados $a_p$ y $f_z$. Con el fin de obtener este residuo, la fuerza de corte por diente de la ec.~(\ref{eq:Fc}) se evalua en $k_{c1.1}^{\text{nom}}$, $m_c^{\text{nom}}$ y los parámetros de corte $a_p$, $f_z$, $D$ para obtener un torque de referencia:
+
+\begin{equation}
+  M_{c,\text{teoria}} = \frac{k_{c1.1}^{\text{nom}} \cdot a_p \cdot f_z^{\,1-m_c^{\text{nom}}} \cdot D}{2},
+  \label{eq:Mc_teoria}
+\end{equation}
+
+y la aproximación del torque medio por revolución $\overline{\bar{I}}$ de la ec.~(\ref{eq:torque_rev}) se compara contra esta referencia mediante el residuo normalizado
+
+\begin{equation}
+  M_{c,\text{norm}} = \frac{\overline{\bar{I}} - M_{c,\text{teoria}}}{M_{c,\text{teoria}}}.
+  \label{eq:Mc_norm}
+\end{equation}
+
+$M_{c,\text{norm}}$ cuantifica la fracción de la señal medida que no explica la predicción nominal de Kienzle a los parámetros $a_p$ y $f_z$ comandados, y por tanto se espera que contenga una información residual al $a_e$ desconocido. Sin embargo, la ausencia de un valor exacto de $a_e$ en las condiciones de entrenamiento limita la posibilidad de validar esta interpretación directamente, lo que constituye un punto de mejora para estudios futuros.
+
+\subsection{Normalización de características y objetivo}
+
+La matriz de características completa $\mathbf{X} \in \mathbb{R}^{N \times d}$ y el vector objetivo $\mathbf{y} \in \mathbb{R}^{N}$ se estandarizan de forma independiente mediante
+
+\begin{equation}
+  \mathbf{x}'_{i} = \frac{\mathbf{x}_i - \mu_{\mathbf{X}}}{\sigma_{\mathbf{X}}}, \qquad
+  y'_{i} = \frac{y_i - \mu_{\mathbf{y}}}{\sigma_{\mathbf{y}}},
+  \label{eq:estandarizacion}
+\end{equation}
+
+con $\mu$ y $\sigma$ estimados unicamente en la partición de entrenamiento. Las columnas con varianza cero (por ejemplo, $D$ y $z$ cuando son constantes en todos los experimentos) se eliminan antes de la estandarización mediante un filtro de umbral de varianza.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Métricas de Evaluación de Impacto}
+
+Se definieron métricas en dos dimensiones: rendimiento predictivo e impacto operativo.
+
+\subsection{Métricas de rendimiento predictivo}
+
+\begin{longtable}{>{\bfseries}p{4.0cm} p{7.2cm} p{2.5cm}}
+  \toprule
+  \textbf{Métrica} & \textbf{Descripción} & \textbf{Tipo} \\
+  \midrule
+  \endhead
+  RMSE & Error cuadrático medio de estimación de $a_e/D$ en la escala original. & Regresión \\[0.3cm]
+  $R^2$ & Coeficiente de determinación; proporción de varianza de $a_e/D$ explicada por el modelo. & Regresión \\[0.3cm]
+  Perdida de Huber (val.) & Función objetivo evaluada en la partición de validación; criterio de selección de hiperparametros. & MLP \\[0.3cm]
+  $\hat{\sigma}^2$ (MC Dropout) & Varianza promedio estimada mediante $T$ pasadas estocásticas; mide la agudeza de la distribución predictiva. & MLP \\[0.3cm]
+  Ensayos hasta convergencia & Numero de configuraciones evaluadas antes de alcanzar la perdida minima de validación; mide la eficiencia de búsqueda. & Grid / TPE \\
+  \bottomrule
+\end{longtable}
+
+\subsection{Métricas de impacto operativo}
+
+El error máximo tolerable en un sistema de monitorio industrial se establece en $\pm 5$ puntos porcentuales de $a_e/D$, umbral que garantiza que el sistema de control adaptativo no aplique correcciones erróneas de parámetros de corte. Adicionalmente, el modelo debe producir una estimación estable en el numero mínimo de segmentos posible, de modo que la latencia de detección sea compatible con los ciclos de control del CNC. La capacidad de generalización a condiciones de $f_z$ y $a_p$ no vistas durante el entrenamiento se evalúa como validación de la robustez del enfoque de características con base física.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Comparativa y Mejoras de Modelos}
+\label{sec:modelos}
+
+\subsection{Arquitectura del estimador MLP}
+
+El regresor, denominado \texttt{AeEstimatorMLP}, es una red neuronal de propagación hacia adelante con $L$ capas ocultas. Para una entrada $\mathbf{x}' \in \mathbb{R}^d$, cada capa oculta aplica
+
+\begin{equation}
+  \mathbf{h}^{(l)} = \text{Dropout}_p\!\Bigl(\sigma\bigl(W^{(l)} \mathbf{h}^{(l-1)} + \mathbf{b}^{(l)}\bigr)\Bigr), \qquad l = 1,\dots,L,
+  \label{eq:mlp}
+\end{equation}
+
+con $\mathbf{h}^{(0)} = \mathbf{x}'$, $\sigma(\cdot)$ una activación ReLU y una tasa de dropout uniforme $p$ aplicada después de cada capa oculta. La capa de salida es una unidad lineal única que produce la predicción estandarizada de $a_e/D$. Tanto el numero de capas $L$ como los anchos por capa $(u_1,\dots,u_L)$ se tratan como hiperparametros, permitiendo que profundidad y ancho varíen conjuntamente con la tasa de dropout $p$.
+
+\subsection{Procedimiento de entrenamiento}
+
+La red se entrena minimizando la perdida de Huber entre las predicciones y los objetivos estandarizados medidos:
+
+\begin{equation}
+  \mathcal{L}_{\text{Huber}}(y', \hat{y}') =
+  \begin{cases}
+    \dfrac{1}{2}(y' - \hat{y}')^2, & |y' - \hat{y}'| \le \delta, \\[6pt]
+    \delta\!\left(|y' - \hat{y}'| - \dfrac{1}{2}\delta\right), & |y' - \hat{y}'| > \delta,
+  \end{cases}
+  \label{eq:huber}
+\end{equation}
+
+con $\delta = 1.0$. La perdida de Huber combina el comportamiento cuadrático del error cuadrático medio para residuos pequeños con el comportamiento lineal del error absoluto medio para residuos grandes, limitando la influencia de segmentos atípicos sin descartarlos. La red se optimiza con Adam, un tamaño de lote de 16 y un presupuesto fijo de 300 épocas para todas las evaluaciones finales de modelos. La figura \ref{fig:entrenamiento_no_opt} se ve el resultado de un primer entrenamiento sin optimización de hiperparametros.
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{img/Hubret_loss_not_optim.png}
+    \caption{Primer entrenamiento sin optimización de hiperparametros}
+    \label{fig:entrenamiento_no_opt}
+\end{figure}
+
+\subsection{Espacio de búsqueda de hiperparametros}
+\label{sec:hpo}
+
+Los hiperparametros $(L, u_1,\dots,u_L, p, N_{\text{seg}})$ determinan conjuntamente la capacidad del modelo, la fuerza de regularización y la granularidad de la segmentación temporal. Dado que estos factores interactúan entre si, se ejecutan y comparan una búsqueda exhaustiva Grid Search y una búsqueda TPE bayesiana sobre el mismo espacio acotado y bajo condiciones idénticas de entrenamiento.
+
+El espacio de búsqueda compartido se define sobre el numero de capas ocultas $L \in \{1,2,3\}$, un ancho por capa extraído de $\{32, 64, 128\}$, una tasa de dropout $p \in \{0.0, 0.1, 0.2, 0.3\}$ y $N_{\text{seg}} \in \{1,2,4,8\}$. Se mantiene deliberadamente una asimetría entre las dos estrategias: el Grid Search aplica un ancho uniforme a todas las $L$ capas, mientras que el muestreador TPE busca el ancho de cada capa de forma independiente, dado que una rejilla de ancho uniforme mantiene la cardinalidad de la búsqueda exhaustiva en un nivel tratable mientras que el sustitudo TPE puede explotar el espacio de búsqueda por capa sin una explosión en el conteo de ensayos.
+
+\subsection{Grid Search}
+
+El Grid Search evalúa cada elemento del producto cartesiano de los conjuntos discretizados de hiperparametros:
+
+\begin{equation}
+  |\Theta_{\text{grid}}| = |L| \times |u| \times |p| \times |N_{\text{seg}}| = 3 \times 3 \times 4 \times 4 = 144,
+  \label{eq:grid}
+\end{equation}
+
+lo que produce 144 configuraciones candidatas en la configuración base. Cada configuración se entrena y evalúa en una partición de validación, y se retiene la configuración que minimiza $\mathcal{L}_{\text{Huber}}$ en validación. Dado que la ec.~(\ref{eq:grid}) crece multiplicativamente con el numero de hiperparametros, el Grid Search proporciona una referencia exhaustiva pero computacionalmente costosa contra la cual se evalúa la estrategia bayesiana.
+
+\subsection{Estimador de Parzen estructurado en árbol (TPE bayesiano)}
+
+Akiba introducen en \cite{optuna2019} el muestreador TPE en el marco de Optuna, el cual modela el espacio de hiperparametros de forma probabilística en lugar de exhaustiva. En cada ensayo $t$, el conjunto de configuraciones previamente evaluadas se particiona en subconjuntos ``buenos'' y ``malos'' según un cuantil $\gamma$ de las perdidas de validación observadas, y se ajustan dos estimadores de densidad de kernel:
+
+\begin{equation}
+  \ell(\theta) = p(\theta \mid \mathcal{L}_{\text{Huber}} < \tau), \qquad
+  g(\theta) = p(\theta \mid \mathcal{L}_{\text{Huber}} \ge \tau),
+  \label{eq:tpe}
+\end{equation}
+
+donde $\tau$ es el umbral del cuantil de perdida. La siguiente configuración se muestrea para maximizar la razón $\ell(\theta)/g(\theta)$, proporcional a la mejora esperada sobre $\tau$. El muestreador se configura con \texttt{multivariate=True}, de modo que $\ell$ y $g$ se ajustan sobre la distribución conjunta de todos los hiperparametros en lugar de hacerlo de forma independiente por dimensión. Eso es esencial para capturar el acoplamiento entre ancho de capa, profundidad y tasa de dropout. Un \texttt{HyperbandPruner} termina anticipadamente los ensayos claramente suboptimos antes de completar las 300 epocas, reduciendo el costo de reloj por ensayo. En la comparativa reportada, el Grid Search evaluó 216 configuraciones mientras que el muestreador TPE alcanzo una perdida de validación comparable o mejor dentro de 80 ensayos. Eso refleja la eficiencia de muestreo que aporta la ec.~(\ref{eq:tpe}) frente a la enumeración exhaustiva.
+
+En la figura \ref{fig:GS_vs_TPE} se presentan los resultados de ambos métodos de la búsqueda de hiperparametros en detalle.
+
+\subsection{Cuantificación de incertidumbre mediante MC Dropout}
+
+La incertidumbre predictiva se estima mediante MC Dropout (\textit{Monte Carlo Dropout}). En tiempo de inferencia, el dropout de la ec.~(\ref{eq:mlp}) se mantiene activo y se realizan $T$ pasadas estocasticas hacia adelante para una entrada dada $\mathbf{x}'$, produciendo predicciones $\{\hat{y}'_1, \dots, \hat{y}'_T\}$. La media y varianza predictivas son
+
+\begin{equation}
+  \hat{\mu}(\mathbf{x}') = \frac{1}{T}\sum_{t=1}^{T}\hat{y}'_t, \qquad
+  \hat{\sigma}^2(\mathbf{x}') = \frac{1}{T-1}\sum_{t=1}^{T}\left(\hat{y}'_t - \hat{\mu}(\mathbf{x}')\right)^2.
+  \label{eq:mcdropout}
+\end{equation}
+
+$\hat{\sigma}^2(\mathbf{x}')$ aproxima la incertidumbre del modelo en $\mathbf{x}'$ y se reporta junto con $\hat{\mu}(\mathbf{x}')$ para las mejores configuraciones del Grid Search y del TPE, permitiendo comparar las dos estrategias no solo en precisión de predicción puntual, sino también en la agudeza de sus distribuciones predictivas.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Resultados}
+
+\subsection{Pipeline completo de procesamiento}
+
+El pipeline de datos completo avanza desde la adquisición hasta la selección del modelo en seis etapas secuenciales. En primer lugar, se cargan los 64 archivos de medición los datos del CNC junto con sus parámetros de corte desde \texttt{cut\_param} y \texttt{df\_info}. A continuación, se aplican la corrección de la linea base de fricción, la eliminación de transitorios de arranque y la segmentación en $N_{\text{seg}}$ partes conforme a las ecs.~(\ref{eq:Ic})--(\ref{eq:segmentacion}). Posteriormente, se extrae el vector de características con base física conforme a las ecs.~(\ref{eq:estadisticos})--(\ref{eq:Mc_norm}). Se combinan descriptores estadísticos, de torque por revolución, espectrales y el residuo normalizado de Kienzle. Así se estandarizan características y objetivos conforme a la ec.~(\ref{eq:estandarizacion}) y se eliminan previamente las columnas de varianza cero. A continuación, se realiza la optimización conjunta de arquitectura de red, dropout y segmentación mediante Grid Search (ec.~\ref{eq:grid}) y TPE bayesiano (ec.~\ref{eq:tpe}) bajo el procedimiento de entrenamiento de la ec.~(\ref{eq:huber}). Finalmente, se re-entrena la mejor configuración de cada estrategia a presupuesto completo de 300 épocas, seguido de la evaluación por MC Dropout (ec.~\ref{eq:mcdropout}) para comparar precisión e incertidumbre.
+
+\subsection{Comparativa Grid Search vs.\ TPE bayesiano}
+
+El Grid Search evaluó 216 configuraciones con una perdida de Huber en validación concentrada entre $\mathcal{L}_{\text{Huber, GS}} \approx 0.025$ y $0.060$, lo que indica que una region efectiva estrecha del espacio de hiperparametros fue identificada de forma consistente. El muestreador TPE bayesiano alcanzo la perdida optima $\mathcal{L}_{\text{Huber, TPE}} = 0.0225$ con unicamente 80 ensayos, lo que representa una reducción del 63\% en el numero de evaluaciones. La curva de convergencia del TPE desciende de forma pronunciada dentro de los primeros 15 ensayos y alcanza el valor optimo del Grid Search en el ensayo $\approx 55$; a partir de ese punto no se observa mejora adicional, lo que confirma que 55--60 ensayos habrian sido suficientes para la convergencia.
+
+Ambas estrategias producen un coeficiente de determinación muy parecidas de $R^2_{GS} = 0.984$ $R^2_{TPE} = 0.9932$. Con eso se confirma que las dos arquitecturas optimas son funcionalmente equivalentes desde el punto de vista predictivo. Sin embargo, el TPE alcanza un error absoluto medio (MAE por sus siglas en ingles) de $0.377\,\text{mm}$ frente a $0.453\,\text{mm}$ del Grid Search, lo que representa una reducción del 17\% en el error absoluto de estimación. El resumen de resultados se presenta en la Tabla~\ref{tab:comparativa}.
+
+
+\begin{center}
+\begin{tabular}{lccccc}
+  \toprule
+  \textbf{Estrategia} & \textbf{$\mathcal{L}_{\text{Huber}}$ (val.)} & \textbf{$R^2$} & \textbf{MAE (mm)} & \textbf{Ensayos} \\
+  \midrule
+  Grid Search  & 0.0225 & 0.984 & $0.453$ & 216 \\
+  TPE bayesiano & 0.0204 & 0.9932 & $0.377$ & 80  \\
+  \bottomrule
+\end{tabular}
+\label{tab:comparativa}
+\end{center}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{img/Eval_GS_vs_TPE.png}
+    \caption{Evaluación de Grid Search vs. TPE}
+    \label{fig:GS_vs_TPE}
+\end{figure}
+
+Los graficos de paridad de ambos modelos muestran la mayor dispersión en $a_e = 40\,\text{mm}$ (el nivel de material en contacto radial mas alto probado), lo cual es fisicamente consistente: valores elevados de $a_e$ involucran dinamicas de material en contacto mas complejas y una fracción mayor de la señal de torque satura cerca de la carga nominal del motor. En $a_e \approx 26\,\text{mm}$, ambos modelos exhiben una tendencia sistematica a la subestimación, lo que puede reflejar una relaión señal--ruido reducida en condiciones de bajo material en contacto radial. El agrupamiento discreto de puntos en $a_e \in \{26, 32, 38, 40\}\,\text{mm}$ confirma que el diseno experimental utiliza niveles discretos de $a_e$; en la partición de validación actual no se evalua la capacidad de interpolación a niveles de material en contacto no observados durante el entrenamiento.
+
+\subsection{Sensibilidad a hiperparametros: mapas de calor del Grid Search}
+
+El mínimo global ($\mathcal{L}_{\text{Huber}} = 0.022$) ocurre en dropout $= 0.30$ y $L = 3$ capas. Eso significa un optimo aislado y pronunciado: ninguna otra combinación en el mapa de calor se aproxima a este valor. El rendimiento se degrada sustancialmente hacia dropout $= 0.45$ con $L = 1$ ($\mathcal{L} = 0.028$) o $L = 2$ ($\mathcal{L} = 0.027$), lo que indica que redes poco profundas con dropout elevado presentan sobreregularización y pierden la capacidad representacional necesaria para la regresión de características con base física. Examinando la tendencia por columnas, $L = 3$ produce consistentemente la menor perdida en todos los niveles de dropout, lo que confirma que la profundidad es el factor arquitectónico dominante en este panel.
+
+Con respecto a la dimensión unidades por capa $\times$ $N_{\text{seg}}$, el mínimo ($\mathcal{L}_{\text{Huber}} = 0.022$) aparece en unidades $= 64$ y $N_{\text{seg}} = 2$. La observación mas importante es que el rendimiento se degrada de forma monotona conforme $N_{\text{seg}}$ supera 2, independientemente del numero de unidades: en $N_{\text{seg}} = 7$, todas las configuraciones superan $\mathcal{L} = 0.048$, mas del doble de la perdida optima. Este efecto de sobresegmentación revela que la fragmentación temporal excesiva de la señal de corriente destruye la información estructural que el MLP utiliza para reconstruir $a_e$. El optimo en $N_{\text{seg}} = 2$ tiene una interpretación físicamente significativa: dos segmentos corresponden plausiblemente a la fase de entrada de la herramienta y a la fase de corte en estado estacionario dentro de un paso de diente, una descomposición con sentido mecánico genuino. Hay que mencionar que la ausencia de una condición $L = 4$ en el Grid Search representa un limite de búsqueda; si profundidades adicionales producirían mejoras ulteriores es una pregunta que permanece abierta. La figura\ref{fig:heatmaps} muestra el mapa de color de la evaluación de dropout y números de capas y segmentos.
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{img/HearMaps.png}
+    \caption{Heatmaps: Dropout, numero de capas y segmentos}
+    \label{fig:heatmaps}
+\end{figure}
+
+\subsection{Importancia de hiperparametros: descomposición fANOVA del TPE}
+
+El dropout domina la descomposición fANOVA (\textit{functional Analysis of Variance}) con una puntuación de importancia de aproximadamente $0.55$, superando la contribución combinada de todos los demás hiperparametros. El resultado se puedo observar en la figura \ref{fig:eval_hyperparameters}Este es el hallazgo central de la optimización: la fuerza de regularización es el determinante primario del rendimiento de generalización en este MLP, por encima del tamaño arquitectónico o de la estrategia de resolución temporal. $N_{\text{seg}}$ y $L$ comparten una importancia aproximadamente igual ($\approx 0.19$ cada uno), lo que confirma que tanto el enfoque de extracción temporal de características como la profundidad de la red ejercen una influencia comparable sobre la perdida de validación. Las unidades por capa contribuyen unicamente $\approx 0.06$, consistente con la observación en los mapas de calor de que el rendimiento es relativamente insensible al ancho de capa una vez satisfecho el umbral mínimo de capacidad de 64 unidades.
+
+La equivalencia de importancia entre $N_{\text{seg}}$ y $L$ implica que ambos podrían optimizarse conjuntamente en una búsqueda de seguimiento de menor dimensionalidad sin perdida de cobertura, lo que reduce el costo computacional de futuras iteraciones del modelo.
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{img/eval_hyperparam.png}
+    \caption{functional Analysis of Variance}
+    \label{fig:eval_hyperparameters}
+\end{figure}
+
+\subsection{Otros métodos}
+Durante la investigación se probo tambien otros metdos usando le framework \textit{Optuno}, \cite{optuna2019}. En este framework se probo los métodos \textit{Random Forest}, \textit{XGBoost} y \textit{LigthGBM}. Estos métodos de busqueda de arboles tuvieron buenos resultado, sin embargo no llegaron al los optimos de Grid Search o TPE. Por lo tanto solo se menciona aquí y se puede ver los resultados en la figura \ref{fig:Optuna} pero no se discuto más en este trabajo.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{img/Optuna_optim.png}
+    \caption{Resultados del framework Optuno: }
+    \label{fig:Optuna}
+\end{figure}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Descripción del Producto de Datos}
+
+El producto de datos resultante de la estancia consiste en cinco componentes integrados. El primero es el pipeline de preprocesamiento y extracción de características, implementado en Python mediante las clases \texttt{KienzleModel} y \texttt{MillingSignalUtils}, que recibe señales crudas de corriente del husillo con sus parametros de corte y devuelve el vector de características estandarizado $\mathbf{x}'$ listo para alimentar el estimador. El segundo componente es el modelo \texttt{AeEstimatorMLP} entrenado con la mejor configuración de hiperparametros identificada, exportado en formato compatible con PyTorch junto con la documentación completa de su arquitectura y proceso de entrenamiento. El tercer componente es la interfaz de inferencia: una función que, dado un segmento de señal y los parámetros de corte, devuelve la estimación $\hat{\mu}(a_e/D)$ y la varianza epistemica $\hat{\sigma}^2$ mediante MC Dropout. El cuarto componente es el conjunto de datos en formato CSV con los 64 archivos de medición anotados y el pipeline de segmentación documentado con metadatos de adquisición. El quinto componente es el repositorio de código versionado con instrucciones de reproducibilidad, versiones de dependencias y scripts de entrenamiento y evaluación.
+
+Las principales limitaciones del producto son las siguientes: el modelo fue entrenado para el par material--herramienta especifico de los experimentos; la aplicación a otros materiales requiere re-estimar $k_{c1.1}$ y $m_c$. Adicionalmente, la velocidad de husillo $n$ se mantuvo constante durante la adquisiión, por lo que variaciones en $n$ requieren re-calibrar la constante de torque del motor $k_m$ de la ec.~(\ref{eq:Iq}).
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Conclusiones y Recomendaciones}
+
+\subsection{Conclusiones}
+
+En este trabajo se desarrollo un estimador MLP del material en contacto radial $a_e/D$ en fresado plano, basado en un vector de características con fundamento físico derivado del modelo de Kienzle y optimizado mediante dos estrategias de búsqueda de hiperparametros comparadas bajo condiciones identicas de entrenamiento.
+
+\begin{itemize}
+  \item Ambas estrategias de optimización producen un coeficiente de determinación $R^2 = 0.984$, demostrando que la corriente del husillo contiene información suficiente para estimar $a_e$ de forma indirecta con alta precisión. La configuración optima identificada es dropout $= 0.30$, $L = 3$ capas, 64 unidades por capa y $N_{\text{seg}} = 2$.
+  \item El muestreador TPE bayesiano alcanzo la perdida de validación optima $\mathcal{L}_{\text{Huber}} = 0.0221$ con 80 ensayos frente a 216 del Grid Search, una reducción del 63\% en el costo computacional, manteniendo ademas un MAE de $0.377\,\text{mm}$ frente a $0.453\,\text{mm}$ del Grid Search (mejora del 17\%).
+  \item La descomposición fANOVA del TPE revela que el dropout es el determinante primario de generalización con importancia $\approx 0.55$, seguido por $N_{\text{seg}}$ y $L$ con $\approx 0.19$ cada uno, y el ancho de capa con solo $\approx 0.06$; este resultado orienta directamente el diseno de futuras búsquedas de hiperparametros.
+  \item El optimo en $N_{\text{seg}} = 2$ tiene interpretación física directa ---correspondiente a la fase de entrada y la fase de estado estacionario del paso de diente--- lo que fortalece el argumento de que la estrategia de ingeniería de características captura información genuina del proceso y no correlaciones espu\-rias de la señal.
+\end{itemize}
+
+Los resultados anteriores deben interpretarse bajo la condición de que la velocidad de husillo $n$ y el par material--herramienta se mantienen constantes respecto a los experimentos de entrenamiento.
+
+\subsection{Recomendaciones}
+
+Con el fin de ampliar la validez del modelo, se recomienda incorporar variaciones en la velocidad de husillo $n$ y en el tipo de fresa al conjunto de datos experimental, lo que requiere re-estimar la constante $k_m$ de la ec.~(\ref{eq:Iq}) para cada condición de velocidad. Una vez validada la precisión del modelo en condiciones estáticas, el siguiente paso concreto es la integración del pipeline de inferencia con el sistema de adquisición del CNC para habilitar el monitoreo en linea, evaluando la latencia del modelo frente al tiempo de respuesta requerido por el controlador. Dado que los mejores resultados se obtuvieron con características vinculadas a la periodicidad del proceso, se recomienda explorar arquitecturas de series de tiempo como LSTM o \textit{Temporal Convolutional Networks} (TCN) que capturen directamente la dinámica transitoria de la señal sin requerir extracción manual de características. En trabajos futuros, se tiene que integrar el comportamiento de diferentes centro de maquinados. Los datos obtenidos de la C32U, no han sido evaluados en su totalidad durante esta estancia por cuestión de tiempo. Sin embargo, el objetivo en un futuro es integrarlo y comparar los MLPs de ambos centros con el objetivo de reducir el tiempo de entrenamiento para diferentes centros  de maquinado y herramientas distintas. 
+Finalmente y con esas comparaciones de centros de maquinado los resultados obtenidos son suficientemente novedosos para ser sometidos a una revista del área de manufactura inteligente o monitoreo de procesos de maquinado.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section*{Referencias}
+\addcontentsline{toc}{section}{Referencias}
+
+\begin{thebibliography}{99}
+
+\bibitem{kienzle1957}
+Kienzle, O. (1957).
+\textit{Die Bestimmung von Kraften und Leistungen an spanenden Werkzeugen
+und Werkzeugmaschinen}.
+VDI-Zeitschrift, 94(11--12), 299--305.
+
+\bibitem{altintas2012}
+Altintas, Y. (2012).
+\textit{Manufacturing Automation: Metal Cutting Mechanics, Machine Tool
+Vibrations, and CNC Design}.
+Cambridge University Press.
+
+\bibitem{byrne1995}
+Byrne, G., Dornfeld, D., Inasaki, I., Ketteler, G., Konig, W., \& Teti, R.
+(1995).
+Tool condition monitoring (TCM)---The status of research and industrial
+application.
+\textit{CIRP Annals}, 44(2), 541--567.
+
+\bibitem{postel2019}
+Postel M., et al (2019). Monitoring of vibrations and cutting forces with spindle mounted vibrations ensors. CIRP Annals Manufacturing Technology
+\textit{CIRP Annals}, https://doi.org/10.1016/j.cirp.2019.03.01
+
+.(2019),
+
+\bibitem{schmitz2009}
+Schmitz, T.~L., \& Smith, K.~S. (2009).
+\textit{Machining Dynamics: Frequency Response to Improved Productivity}.
+Springer.
+
+\bibitem{optuna2019}
+Akiba, T., Sano, S., Yanase, T., Ohta, T., \& Koyama, M. (2019).
+Optuna: A next-generation hyperparameter optimization framework.
+\textit{Proceedings of the 25th ACM SIGKDD International Conference on
+Knowledge Discovery \& Data Mining}, 2623--2631.
+
+\bibitem{MachiningDoctorKc}
+Machining Doctor (2022). \textit{Specific Cutting Force (KC \& KC1)}.
+\url{https://www.machiningdoctor.com/glossary/specific-cutting-force-kc-kc1/}
+(Accessed: 25 July 2026).
+
+
+\end{thebibliography}
+
+\end{document}
