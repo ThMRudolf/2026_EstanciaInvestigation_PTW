@@ -571,7 +571,7 @@ class CNCCutExtractor:
     def _rel_t(self, ts: pd.Timestamp) -> float:
         return (ts - self._t_ref).total_seconds()
 
-    # ------------------------------------------------------------------
+    # ------------------------------------j------------------------------
     # 2. Kraft-Bursts (zusammenhaengende Aufnahme-Fenster) bestimmen
     # ------------------------------------------------------------------
     def _force_bursts(self) -> List[dict]:
