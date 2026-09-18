@@ -1393,6 +1393,9 @@ class CNCCutExtractor:
         z_axis_index: Optional[int] = None,
         z_tol: float = 0.05,
         z_safe_heights: Sequence[float] = (10.0, 20.0),
+        cut_axis_letter: Optional[str] = None,
+        x_axis_index: int = 4,
+        y_axis_index: int = 5,
     ) -> pd.DataFrame:
         """
         Gruppiert die Bloecke aus detect_blocks() nach Z-Tiefe (per Default
@@ -1423,17 +1426,42 @@ class CNCCutExtractor:
             Bekannte Sicherheits-/Park-Hoehen (siehe oben) -- Bloecke mit
             Z-Median nahe einer dieser Hoehen werden als near_safe_height=True
             markiert (voraussichtlich kein echter Schnitt).
+        cut_axis_letter : {"X", "Y"}, optional
+            Schnittachse dieser Datei (siehe Abschnitt 14b im Notebook, alle
+            Z-Level einer Datei liegen auf derselben Schnittachse). Bestimmt
+            NUR, welche der beiden Querachsen als Median gespeichert wird --
+            bewegt sich der Schnitt in Y, ist die X-Position je Block
+            (naeherungsweise) konstant und daher als cross_axis_median (X)
+            interessant, und umgekehrt (analog zur Titel-Logik in Abschnitt
+            16). Default None: keine cross_axis_median/-label-Spalte.
+        x_axis_index : int, default 4
+            Achsindex der X-Achse (fuer cross_axis_median, falls
+            cut_axis_letter="Y").
+        y_axis_index : int, default 5
+            Achsindex der Y-Achse (fuer cross_axis_median, falls
+            cut_axis_letter="X").
 
         Returns
         -------
         Eine Zeile je Block: block_id, level_id, t_start, t_end, duration_s,
         z_median, z_mad, frac_near_median, near_safe_height,
-        n_blocks_in_level. Keine Filterung -- die Spalten zeigen lediglich
-        Auffaelligkeiten an (analog zu burst_diagnostics()/cut_diagnostics()).
+        n_blocks_in_level, und (nur falls cut_axis_letter gesetzt)
+        cross_axis_label, cross_axis_median. Keine Filterung -- die Spalten
+        zeigen lediglich Auffaelligkeiten an (analog zu
+        burst_diagnostics()/cut_diagnostics()).
         """
         if z_axis_index is None:
             z_axis_index = self.feed_axis_indices[-1]
         col = f"axis{z_axis_index}_positionact"
+
+        if cut_axis_letter is not None:
+            if cut_axis_letter not in ("X", "Y"):
+                raise ValueError(
+                    f"cut_axis_letter={cut_axis_letter!r} muss 'X', 'Y' oder None sein."
+                )
+            cross_axis_label = "Y" if cut_axis_letter == "X" else "X"
+            cross_axis_index = y_axis_index if cross_axis_label == "Y" else x_axis_index
+            cross_col = f"axis{cross_axis_index}_positionact"
 
         blocks = self.detect_blocks()
         rows = []
@@ -1443,22 +1471,32 @@ class CNCCutExtractor:
             if not mdf.empty:
                 mdf = mdf[(mdf["t"] >= t0) & (mdf["t"] <= t1)]
             if mdf.empty or col not in mdf.columns:
-                rows.append({
+                row = {
                     "block_id": block_id, "t_start": t0, "t_end": t1,
                     "duration_s": t1 - t0, "z_median": np.nan, "z_mad": np.nan,
                     "frac_near_median": np.nan, "near_safe_height": False,
-                })
+                }
+                if cut_axis_letter is not None:
+                    row["cross_axis_label"] = cross_axis_label
+                    row["cross_axis_median"] = np.nan
+                rows.append(row)
                 continue
             z = mdf[col].to_numpy()
             z_median = float(np.median(z))
             z_mad = float(np.median(np.abs(z - z_median)))
             frac_near_median = float(np.mean(np.abs(z - z_median) < z_tol * 20))
             near_safe_height = bool(np.any(np.abs(z_median - np.asarray(z_safe_heights)) <= z_tol))
-            rows.append({
+            row = {
                 "block_id": block_id, "t_start": t0, "t_end": t1,
                 "duration_s": t1 - t0, "z_median": z_median, "z_mad": z_mad,
                 "frac_near_median": frac_near_median, "near_safe_height": near_safe_height,
-            })
+            }
+            if cut_axis_letter is not None:
+                row["cross_axis_label"] = cross_axis_label
+                row["cross_axis_median"] = (
+                    float(np.median(mdf[cross_col].to_numpy())) if cross_col in mdf.columns else np.nan
+                )
+            rows.append(row)
 
         level_id = 0
         prev_z = None
@@ -1475,11 +1513,14 @@ class CNCCutExtractor:
         diag = pd.DataFrame(rows)
         level_counts = diag.groupby("level_id")["block_id"].transform("count")
         diag["n_blocks_in_level"] = level_counts
-        return diag[[
+        cols = [
             "block_id", "level_id", "t_start", "t_end", "duration_s",
             "z_median", "z_mad", "frac_near_median", "near_safe_height",
             "n_blocks_in_level",
-        ]]
+        ]
+        if cut_axis_letter is not None:
+            cols += ["cross_axis_label", "cross_axis_median"]
+        return diag[cols]
 
     def export_z_level_segments(
         self,

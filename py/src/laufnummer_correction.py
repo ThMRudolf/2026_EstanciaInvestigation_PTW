@@ -60,11 +60,13 @@ def _lev_number(path: Path) -> int:
 
 
 def list_lev_files(input_dir: PathLike) -> List[Path]:
-    """Alle axon_logger_ptw_Lev*.raw.json-Dateien in input_dir, aufsteigend nach LevNNN sortiert."""
+    """Alle axon_logger_ptw_Lev*.json-Dateien in input_dir, aufsteigend nach LevNNN sortiert.
+    Matcht sowohl die rohen Exporte (...Lev020.raw.json) als auch die hieraus per
+    correct_session_folder() erzeugten korrigierten Kopien (...Lev020.json, ohne .raw)."""
     input_dir = Path(input_dir)
-    files = sorted(input_dir.glob("axon_logger_ptw_*.raw.json"), key=_lev_number)
+    files = sorted(input_dir.glob("axon_logger_ptw_Lev*.json"), key=_lev_number)
     if not files:
-        raise ValueError(f"Keine axon_logger_ptw_Lev*.raw.json-Dateien in {input_dir} gefunden.")
+        raise ValueError(f"Keine axon_logger_ptw_Lev*.json-Dateien in {input_dir} gefunden.")
     return files
 
 
@@ -196,7 +198,10 @@ def correct_session_folder(input_dir: PathLike, output_dir: PathLike) -> Tuple[p
             )
 
         # --- Durchlauf 2: Schreiben der korrigierten Kopie ---
-        out_path = output_dir / path.name
+        # .raw wird aus dem Namen entfernt: die Kopie ist nicht mehr die unveraenderte
+        # Rohdatei, nur die urspruenglichen Exporte in input_dir behalten .raw.
+        out_name = path.name.replace(".raw.json", ".json")
+        out_path = output_dir / out_name
         with open(path, "rb") as fin, open(out_path, "w", encoding="utf-8") as fout:
             fout.write("[")
             first_written = True
@@ -288,7 +293,7 @@ def split_by_laufnummer(prep_dir: PathLike, output_dir: PathLike) -> pd.DataFram
     def _handle_for(tag: int):
         fh = handles.get(tag)
         if fh is None:
-            out_path = output_dir / f"axon_logger_ptw_Laufnummer{tag:03d}.raw.json"
+            out_path = output_dir / f"axon_logger_ptw_Laufnummer{tag:03d}.json"
             fh = open(out_path, "w", encoding="utf-8")
             fh.write("[")
             handles[tag] = fh
@@ -329,7 +334,7 @@ def split_by_laufnummer(prep_dir: PathLike, output_dir: PathLike) -> pd.DataFram
         {
             "laufnummer": tag,
             "n_docs": n,
-            "output_path": str(output_dir / f"axon_logger_ptw_Laufnummer{tag:03d}.raw.json"),
+            "output_path": str(output_dir / f"axon_logger_ptw_Laufnummer{tag:03d}.json"),
         }
         for tag, n in sorted(counts.items())
     ]
